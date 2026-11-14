@@ -1,0 +1,43 @@
+{
+  "verified_at": "2026-11-13",
+  "method": "Aside read-only research against official primary sources",
+  "sources": [
+    {
+      "url": "https://docs.polymarket.com/market-data/discover-markets",
+      "finding": "Events group markets; do not equate event IDs with market IDs."
+    },
+    {
+      "url": "https://docs.polymarket.com/market-data/market-details",
+      "finding": "Version-aware v1 clobTokenIds vs v2 positionIds; choose by version, not field presence. Unsupported versions fail closed."
+    },
+    {
+      "url": "https://docs.polymarket.com/market-data/prices-order-books",
+      "finding": "Public outcome-level books. Current documented bid and ask ordering requires normalization, not array position assumptions."
+    },
+    {
+      "url": "https://polymarket.com/tos",
+      "finding": "Public API capability is not an affirmative redistribution license. Review intended use and retain written permission if required; architecture remains gated."
+    },
+    {
+      "url": "https://docs.kalshi.com/getting_started/orderbook_responses",
+      "finding": "Current fixed-point book gives YES/NO bids. Derive opposing asks by complement; preserve quantity. Empty book does not establish existence."
+    },
+    {
+      "url": "https://kalshi-public-docs.s3.amazonaws.com/kalshi-data-terms-of-service.pdf",
+      "finding": "Website-focused data terms restrict reuse. This review does not establish API-specific permission for this product."
+    },
+    {
+      "url": "https://www.postgresql.org/docs/current/mvcc-serialization-failure-handling.html",
+      "finding": "Retry entire transaction after SQLSTATE 40001. 40P01 deadlocks may also warrant retry."
+    },
+    {
+      "url": "https://mason.gmu.edu/~rhanson/mktscore.pdf",
+      "finding": "Original scoring-rule mechanism. Cost-function notation and b ln n bound in the design are mathematical derivations under fixed-b uniform initialization."
+    }
+  ],
+  "unverified": [
+    "No licensing clearance obtained.",
+    "No source API integration executed.",
+    "No capacity, concurrency, security or production engine tests executed."
+  ]
+}
