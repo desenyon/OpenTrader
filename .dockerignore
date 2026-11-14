@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-server
+data
+.env
+.env.*
+.git
+.superpowers
+artifacts
+coverage
+*.log
+docs/design/images
