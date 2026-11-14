@@ -1,3 +1,4 @@
+import { BINARY_VOID_POLICY } from "../shared/rules.js";
 import { validateMarketContent } from "./content-policy.js";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
@@ -830,13 +831,18 @@ export class Store {
         !r.condition?.trim() ||
         !r.source?.trim() ||
         !r.evidence?.trim() ||
-        !r.voidPolicy?.trim() ||
         !Number.isFinite(Date.parse(r.observationAt))
       )
         fail(
           422,
           "INVALID_RULES",
           "Complete objective rules and observation deadline are required",
+        );
+      if (Date.parse(r.observationAt) < close)
+        fail(
+          422,
+          "INVALID_OBSERVATION",
+          "The observation deadline must be at or after trading close",
         );
       if (r.disputeHours !== 24)
         fail(422, "INVALID_RULES", "Challenge window is frozen at 24 hours");
@@ -880,7 +886,11 @@ export class Store {
         b,
         creatorId: userId,
         resolverId: r.resolverId,
-        rules: structuredClone(r),
+        rules: {
+          ...structuredClone(r),
+          observationAt: new Date(r.observationAt).toISOString(),
+          voidPolicy: BINARY_VOID_POLICY,
+        },
         q: [0, 0],
         reserve: "0",
       };
@@ -1037,10 +1047,21 @@ export class Store {
         input.minFillQuantity > input.quantity)
     )
       fail(422, "INVALID_MIN_FILL", "Invalid minimum fill");
-    for (const k of ["maxTotalCost", "minTotalProceeds"] as const)
+    for (const k of [
+      "maxTotalCost",
+      "minTotalProceeds",
+      "maxAveragePrice",
+      "minAveragePrice",
+    ] as const)
       if (input[k] !== undefined) {
         try {
-          if (units(input[k]!) < 0n) throw new Error();
+          const value = units(input[k]!);
+          if (
+            value < 0n ||
+            ((k === "maxAveragePrice" || k === "minAveragePrice") &&
+              value > 1_000_000n)
+          )
+            throw new Error();
         } catch {
           fail(
             422,
@@ -1049,6 +1070,20 @@ export class Store {
           );
         }
       }
+    if (
+      input.timeInForce !== "IOC" &&
+      ((input.side === "BUY" &&
+        input.maxAveragePrice !== undefined &&
+        units(input.maxAveragePrice) < price) ||
+        (input.side === "SELL" &&
+          input.minAveragePrice !== undefined &&
+          units(input.minAveragePrice) > price))
+    )
+      fail(
+        422,
+        "CONTRADICTORY_RESTING_BOUND",
+        "The resting order limit must respect its average-price bound",
+      );
     return price;
   }
   private activePeers(
@@ -1334,14 +1369,38 @@ export class Store {
     quantity: number,
     spent: bigint,
     received: bigint,
+    locked = 0n,
   ) {
-    if (input.maxTotalCost !== undefined && spent > units(input.maxTotalCost))
+    if (
+      input.maxTotalCost !== undefined &&
+      spent + locked > units(input.maxTotalCost)
+    )
       fail(409, "COST_PROTECTION", "Order exceeds maximum total cost");
     if (
       input.minTotalProceeds !== undefined &&
       received < units(input.minTotalProceeds)
     )
       fail(409, "PROCEEDS_PROTECTION", "Order misses minimum total proceeds");
+    if (
+      input.side === "BUY" &&
+      input.maxAveragePrice !== undefined &&
+      spent > units(input.maxAveragePrice) * BigInt(quantity)
+    )
+      fail(
+        409,
+        "AVERAGE_PRICE_PROTECTION",
+        "Order exceeds maximum average price",
+      );
+    if (
+      input.side === "SELL" &&
+      input.minAveragePrice !== undefined &&
+      received < units(input.minAveragePrice) * BigInt(quantity)
+    )
+      fail(
+        409,
+        "AVERAGE_PRICE_PROTECTION",
+        "Order misses minimum average price",
+      );
     if (quantity < (input.minFillQuantity ?? 0))
       fail(409, "FILL_PROTECTION", "Order misses minimum fill quantity");
   }
@@ -1562,8 +1621,9 @@ export class Store {
       this.protections(
         input,
         o.filledQuantity,
-        actualSpent + units(o.locked),
+        actualSpent,
         actualReceived,
+        units(o.locked),
       );
       m.sequence++;
       m.updatedAt = this.now();
@@ -2094,6 +2154,12 @@ export class Store {
       return this.marketView(m);
     });
   }
+  private resolutionReadyAt(m: Market) {
+    return Math.max(
+      Date.parse(m.closeAt),
+      Date.parse(m.rules?.observationAt ?? m.closeAt),
+    );
+  }
   propose(
     userId: string,
     marketId: string,
@@ -2104,9 +2170,22 @@ export class Store {
       determinedAt?: string;
     },
   ) {
+    this.tick();
     return this.transaction(() => {
       this.expireAndClose();
       const m = this.marketRecord(userId, marketId);
+      if (this.clock().getTime() < this.resolutionReadyAt(m))
+        fail(
+          409,
+          "OBSERVATION_PENDING",
+          "The frozen observation deadline has not passed",
+        );
+      if (this.clock().getTime() >= this.resolutionReadyAt(m) + 72 * 36e5)
+        fail(
+          409,
+          "RESOLUTION_LONGSTOP",
+          "The frozen resolution longstop has passed",
+        );
       if (m.status !== "CLOSED")
         fail(409, "INVALID_STATE", "Close market before proposing a result");
       this.impartial(userId, m);
@@ -2348,9 +2427,13 @@ export class Store {
       const r = m.resolution;
       if (
         m.status === "CLOSED" &&
-        this.clock().getTime() >= Date.parse(m.closeAt) + 72 * 36e5
+        this.clock().getTime() >= this.resolutionReadyAt(m) + 72 * 36e5
       )
-        this.settle(m, null, "No resolution quorum by the 72-hour longstop");
+        this.settle(
+          m,
+          null,
+          "No resolution proposal by the 72-hour observation longstop",
+        );
       if (m.status !== "RESOLVING" || !r || r.disputeUntil > this.now())
         continue;
       if (!r.disputes.length)
@@ -2385,7 +2468,7 @@ export class Store {
             m.exchange === "FRIENDS" &&
             ((["OPEN", "HALTED"].includes(m.status) && m.closeAt <= now) ||
               (m.status === "CLOSED" &&
-                ms >= Date.parse(m.closeAt) + 72 * 36e5) ||
+                ms >= this.resolutionReadyAt(m) + 72 * 36e5) ||
               (m.status === "RESOLVING" &&
                 m.resolution &&
                 m.resolution.disputeUntil <= now)),
@@ -2468,6 +2551,12 @@ export class Store {
       if (!c) fail(404, "NOT_FOUND", "Correction not found");
       const m = this.marketRecord(userId, c.marketId);
       this.impartial(userId, m);
+      if (m.exchange === "LIVE" && !this.isLiveReviewer(userId))
+        fail(
+          403,
+          "REVIEWER_REQUIRED",
+          "Live corrections require an operator-appointed platform reviewer",
+        );
       if (
         userId === c.proposedBy ||
         (m.exchange === "FRIENDS" && !m.rules!.reviewerIds.includes(userId))
@@ -2553,6 +2642,14 @@ export class Store {
         );
       return c;
     });
+  }
+  isLiveReviewer(userId: string): boolean {
+    this.user(userId);
+    return (process.env.PLATFORM_REVIEWER_IDS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .includes(userId);
   }
   notifications(userId: string) {
     this.refresh();
@@ -2718,6 +2815,11 @@ export class Store {
   reconcile(userId: string) {
     this.refresh();
     this.user(userId);
+    return { ...this.reconcileSystem(), ownEntries: this.audit(userId).length };
+  }
+  // Internal operational check: returns aggregate invariants, never user data.
+  reconcileSystem() {
+    this.refresh(true);
     const rows = this.db
       .prepare(
         "SELECT transaction_id,asset,account,delta FROM journal ORDER BY id",
@@ -2739,20 +2841,82 @@ export class Store {
       );
     }
     const journalBalanced = [...sums.values()].every((x) => x === 0n),
-      projectionsMatch = Object.entries(this.state.accounts).every(
-        ([account, value]) => BigInt(value) === (balances.get(account) ?? 0n),
+      projectionsMatch = [
+        ...new Set([...Object.keys(this.state.accounts), ...balances.keys()]),
+      ].every(
+        (account) => this.balance(account) === (balances.get(account) ?? 0n),
       ),
       nonnegative = Object.entries(this.state.accounts).every(
         ([account, value]) =>
           account.startsWith("issuer:") || BigInt(value) >= 0n,
       );
+    let inventoryMatches = true,
+      escrowsSolvent = true,
+      locksMatch = true;
+    for (const market of Object.values(this.state.markets)) {
+      for (const [index, outcome] of market.outcomes.entries()) {
+        const suffix = ":" + market.id + ":" + outcome.id;
+        const supply = Object.entries(this.state.accounts)
+          .filter(
+            ([account]) =>
+              (account.startsWith("share:") || account.startsWith("held:")) &&
+              account.endsWith(suffix),
+          )
+          .reduce((total, [, value]) => total + BigInt(value), 0n);
+        if (
+          this.balance("issuer:share:" + market.id + ":" + outcome.id) !==
+            -supply ||
+          (market.exchange === "FRIENDS" && BigInt(market.q[index]!) !== supply)
+        )
+          inventoryMatches = false;
+      }
+      if (
+        market.exchange === "FRIENDS" &&
+        this.balance("escrow:" + market.id) < BigInt(Math.max(...market.q))
+      )
+        escrowsSolvent = false;
+    }
+    const expectedLocks = new Map<string, bigint>();
+    for (const order of Object.values(this.state.orders).filter(
+      (order) => order.status === "OPEN",
+    )) {
+      const amount =
+        order.side === "BUY"
+          ? units(order.limitPrice) *
+            BigInt(order.quantity - order.filledQuantity)
+          : BigInt(order.quantity - order.filledQuantity);
+      const account =
+        order.side === "BUY"
+          ? "lock:" +
+            this.walletRecord(order.userId, order.exchange, order.groupId).id
+          : this.shareLock(order.userId, order.marketId, order.outcomeId);
+      expectedLocks.set(account, (expectedLocks.get(account) ?? 0n) + amount);
+      if (order.side === "BUY" && units(order.locked) !== amount)
+        locksMatch = false;
+    }
+    for (const account of new Set([
+      ...Object.keys(this.state.accounts).filter(
+        (account) => account.startsWith("lock:") || account.startsWith("held:"),
+      ),
+      ...expectedLocks.keys(),
+    ]))
+      if (this.balance(account) !== (expectedLocks.get(account) ?? 0n))
+        locksMatch = false;
     return {
-      balanced: journalBalanced && projectionsMatch && nonnegative,
+      balanced:
+        journalBalanced &&
+        projectionsMatch &&
+        nonnegative &&
+        inventoryMatches &&
+        escrowsSolvent &&
+        locksMatch,
+      inventoryMatches,
+      escrowsSolvent,
+      locksMatch,
       journalBalanced,
       projectionsMatch,
       nonnegative,
       checkedAt: this.now(),
-      ownEntries: this.audit(userId).length,
     };
   }
   bootstrap(userId: string | null) {
@@ -2791,6 +2955,15 @@ export class Store {
         existing?.resolution?.state === "FINAL" &&
         ["RESOLVED", "VOID"].includes(existing.status)
       ) {
+        if (market.resolution?.state === "FINAL")
+          for (const correction of Object.values(this.state.corrections))
+            if (
+              correction.marketId === market.id &&
+              correction.state === "PENDING" &&
+              correction.proposedBy === market.provider &&
+              correction.outcomeId !== market.resolution.outcomeId
+            )
+              correction.state = "SUPERSEDED";
         if (
           market.resolution?.state === "FINAL" &&
           market.resolution.outcomeId !== existing.resolution.outcomeId

@@ -170,6 +170,20 @@ describe("provider normalization", () => {
     expect(market.liquidity).toBe(0);
     expect(market.sourceUrl).toMatch(/^https:\/\/external-api.kalshi.com\//);
   });
+  it("keeps Kalshi yes/no outcomes distinct when source subtitles are identical", () => {
+    const market = normalizeKalshiMarket({
+      ticker: "KXMARS-99",
+      event_ticker: "KXMARS",
+      title: "Will a human visit Mars?",
+      yes_sub_title: "Mars",
+      no_sub_title: "Mars",
+      last_price_dollars: "0.1200",
+      status: "active",
+      close_time: "2099-08-01T00:00:00Z",
+    });
+    expect(market.outcomes.map((x) => x.label)).toEqual(["Yes · Mars", "No · Mars"]);
+    expect(market.outcomes.map((x) => x.id)).toEqual(["yes", "no"]);
+  });
   it("aggregates actual observations into OHLC without synthetic volume or filler", () => {
     expect(
       historyToCandles(

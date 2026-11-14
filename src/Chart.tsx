@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import type { Candle, Market, Outcome } from "../shared/types";
 import { useResource } from "./api";
-import { cents, date, percent } from "./utils";
+import { cents, percent } from "./utils";
 import { Badge, ErrorNote, IconButton } from "./ui";
 
 export function MarketChart({
@@ -42,6 +42,8 @@ export function MarketChart({
 }) {
   const [interval, setInterval] = useState("1d");
   const [kind, setKind] = useState<"candles" | "line">("candles");
+  const [friendsSeries, setFriendsSeries] = useState<"amm" | "trades">("amm");
+  const isAmm = market?.exchange === "FRIENDS" && friendsSeries === "amm";
   const [sma, setSma] = useState(false);
   const [crosshair, setCrosshair] = useState(true);
   const [hover, setHover] = useState<Candle | null>(null);
@@ -51,7 +53,7 @@ export function MarketChart({
   const viewKey = useRef("");
   const history = useResource<Candle[]>(
     market && outcome
-      ? `/markets/${encodeURIComponent(market.id)}/history?interval=${interval}&outcomeId=${encodeURIComponent(outcome.id)}`
+      ? `/markets/${encodeURIComponent(market.id)}/history?interval=${interval}&outcomeId=${encodeURIComponent(outcome.id)}${market.exchange === "FRIENDS" ? `&series=${friendsSeries}` : ""}`
       : null,
     15000,
   );
@@ -65,8 +67,9 @@ export function MarketChart({
   const pointHistory =
     data.length > 0 &&
     data.every((c) => c.high === c.low && c.open === c.close);
-  const renderKind = kind === "candles" && pointHistory ? "line" : kind;
-  const sourceKey = `${market?.id}-${outcome?.id}-${interval}`;
+  const renderKind =
+    isAmm || (kind === "candles" && pointHistory) ? "line" : kind;
+  const sourceKey = `${market?.id}-${outcome?.id}-${interval}-${friendsSeries}`;
   useEffect(() => {
     if (!container.current) return;
     const light = theme === "light";
@@ -107,7 +110,7 @@ export function MarketChart({
         horzLine: { color: "#666e78", labelBackgroundColor: "#323941" },
       },
       localization: {
-        priceFormatter: (price: number) => `${(price * 100).toFixed(1)}¢`,
+        priceFormatter: (price: number) => `${(price * 100).toFixed(2)}¢`,
       },
       handleScroll: true,
       handleScale: true,
@@ -124,7 +127,7 @@ export function MarketChart({
             wickDownColor: "#d77b79",
             priceFormat: {
               type: "custom",
-              minMove: 0.001,
+              minMove: 0.0001,
               formatter: (v: number) => cents(v),
             },
           })
@@ -135,7 +138,7 @@ export function MarketChart({
             pointMarkersRadius: 2,
             priceFormat: {
               type: "custom",
-              minMove: 0.001,
+              minMove: 0.0001,
               formatter: (v: number) => cents(v),
             },
             crosshairMarkerRadius: 3,
@@ -217,11 +220,13 @@ export function MarketChart({
         <div className="control-cluster">
           <button
             className={`text-button ${renderKind === "candles" ? "active" : ""}`}
-            disabled={pointHistory}
+            disabled={pointHistory || isAmm}
             title={
-              pointHistory
-                ? "Source supplies point prices; shown as a line without invented candle ranges."
-                : "Candlestick chart"
+              isAmm
+                ? "AMM probability shows actual committed state observations"
+                : pointHistory
+                  ? "Source supplies point prices; shown as a line without invented candle ranges."
+                  : "Candlestick chart"
             }
             onClick={() => setKind("candles")}
           >
@@ -236,6 +241,23 @@ export function MarketChart({
             <span>Line</span>
           </button>
           <span className="control-separator" />
+          {market?.exchange === "FRIENDS" && (
+            <>
+              <button
+                className={`text-button ${isAmm ? "active" : ""}`}
+                onClick={() => setFriendsSeries("amm")}
+              >
+                AMM
+              </button>
+              <button
+                className={`text-button ${!isAmm ? "active" : ""}`}
+                onClick={() => setFriendsSeries("trades")}
+              >
+                Trades
+              </button>
+              <span className="control-separator" />
+            </>
+          )}
           <button
             className={`text-button ${sma ? "active" : ""}`}
             onClick={() => setSma(!sma)}
@@ -245,7 +267,14 @@ export function MarketChart({
           </button>
         </div>
         <div className="control-cluster">
-          <span className="chart-currency">Probability / ¢</span>
+          <span className="chart-currency">
+            {isAmm
+              ? "AMM probability"
+              : market?.exchange === "FRIENDS"
+                ? "Executed trade price"
+                : "Source price"}{" "}
+            / ¢
+          </span>
           <IconButton
             label={expanded ? "Exit expanded chart" : "Expand chart"}
             onClick={onExpand}
@@ -307,11 +336,15 @@ export function MarketChart({
             </span>
             {market && (
               <Badge tone={history.error ? "amber" : "quiet"}>
-                {pointHistory
-                  ? "SOURCE POINT HISTORY"
-                  : market.exchange === "LIVE"
-                    ? "EXTERNAL HISTORY"
-                    : "FRIENDS EXCHANGE"}
+                {isAmm
+                  ? "AMM INDICATIVE PROBABILITY"
+                  : market.exchange === "FRIENDS"
+                    ? "EXECUTED TRADE PRICES"
+                    : pointHistory
+                      ? "SOURCE POINT HISTORY"
+                      : market.exchange === "LIVE"
+                        ? "EXTERNAL HISTORY"
+                        : "FRIENDS EXCHANGE"}
               </Badge>
             )}
           </div>
@@ -369,7 +402,9 @@ export function MarketChart({
               <p>
                 {history.error ||
                   (market?.exchange === "FRIENDS"
-                    ? "The first trade starts this market’s price history."
+                    ? isAmm
+                      ? "Committed market states appear here after approval."
+                      : "The first trade starts this market’s execution history."
                     : "Chart candles appear when verified source data is available.")}
               </p>
               <span>
@@ -396,7 +431,7 @@ export function MarketChart({
         <div className="chart-footer-info">
           <span>
             {latest
-              ? date(new Date(latest.time * 1000).toISOString())
+              ? `${new Date(latest.time * 1000).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })} UTC`
               : "Waiting for source history"}
           </span>
           <span className="subtle-divider" />{" "}

@@ -43,6 +43,9 @@ export async function registerModerationRoutes(
     );
   `);
   const actor = (request: FastifyRequest) => requireUser(request, store).id;
+  app.get("/api/permissions", async (request) => ({
+    liveCorrectionReview: store.isLiveReviewer(actor(request)),
+  }));
   const moderator = (userId: string, groupId: string) => {
     const group = store.groups(userId).find((group) => group.id === groupId);
     if (!group || !["OWNER", "MODERATOR"].includes(group.role))

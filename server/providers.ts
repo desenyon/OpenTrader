@@ -307,10 +307,14 @@ export function normalizeKalshiMarket(value: unknown): Market {
       .join("\n\n"),
     category: str(raw.category) || "Other",
     outcomes: [
-      { id: "yes", label: str(raw.yes_sub_title) || "Yes", probability: yes },
+      {
+        id: "yes",
+        label: str(raw.yes_sub_title) ? `Yes · ${str(raw.yes_sub_title)}` : "Yes",
+        probability: yes,
+      },
       {
         id: "no",
-        label: str(raw.no_sub_title) || "No",
+        label: str(raw.no_sub_title) ? `No · ${str(raw.no_sub_title)}` : "No",
         probability: new Decimal(1).minus(yes).toNumber(),
       },
     ],

@@ -100,8 +100,10 @@ export function MarketTables({
       setCanceling("");
     }
   };
-  const openOrders = orders.filter((o) =>
-    ["OPEN", "PARTIAL", "PARTIALLY_FILLED", "PENDING"].includes(o.status),
+  const openOrders = orders.filter(
+    (o) =>
+      o.timeInForce !== "IOC" &&
+      ["OPEN", "PARTIAL", "PARTIALLY_FILLED", "PENDING"].includes(o.status),
   );
   return (
     <section
@@ -505,6 +507,9 @@ function MarketRules({
     user && market && settled ? `/markets/${market.id}/corrections` : null,
     15000,
   );
+  const permissions = useResource<{ liveCorrectionReview: boolean }>(
+    user && market?.exchange === "LIVE" && settled ? "/permissions" : null,
+  );
   const [approving, setApproving] = useState("");
   const approveCorrection = async (id: string) => {
     setApproving(id);
@@ -632,7 +637,8 @@ function MarketRules({
             {user &&
               correction.state === "PENDING" &&
               correction.proposedBy !== user.id &&
-              (market.exchange === "LIVE" ||
+              ((market.exchange === "LIVE" &&
+                permissions.data?.liveCorrectionReview) ||
                 rules?.reviewerIds.includes(user.id)) && (
                 <button
                   className="button small"
@@ -655,7 +661,14 @@ function MarketRules({
       </div>
       {market.exchange === "FRIENDS" && user && (
         <div className="rules-actions">
-          {admin && market.status === "HALTED" && <button className="button small" onClick={() => setDialog("resume")}>Resume trading</button>}
+          {admin && market.status === "HALTED" && (
+            <button
+              className="button small"
+              onClick={() => setDialog("resume")}
+            >
+              Resume trading
+            </button>
+          )}
           {admin &&
             market.creatorId !== user.id &&
             ["DRAFT", "PENDING", "PENDING_APPROVAL"].includes(
@@ -684,6 +697,14 @@ function MarketRules({
               <button
                 className="button small"
                 onClick={() => setDialog("resolution")}
+                disabled={
+                  Date.now() <
+                  Math.max(
+                    Date.parse(market.closeAt),
+                    Date.parse(rules?.observationAt ?? market.closeAt),
+                  )
+                }
+                title="Resolution is available after trading closes and the observation window ends"
               >
                 Propose resolution
               </button>
@@ -734,9 +755,9 @@ function MarketRules({
                   ? "Close trading"
                   : dialog === "resume"
                     ? "Resume trading"
-                  : dialog === "corrections"
-                    ? "Propose a funded correction"
-                    : "Independent review"
+                    : dialog === "corrections"
+                      ? "Propose a funded correction"
+                      : "Independent review"
           }
           eyebrow={market.question}
           onClose={() => setDialog("")}
@@ -895,7 +916,14 @@ function Discussion({
               <header>
                 <strong>@{row.handle}</strong>
                 <span>{date(row.createdAt)}</span>
-                {market?.exchange === "FRIENDS" && <IconButton label={`Report comment by ${row.handle}`} onClick={() => setReportCommentId(row.id)}><Flag size={11} /></IconButton>}
+                {market?.exchange === "FRIENDS" && (
+                  <IconButton
+                    label={`Report comment by ${row.handle}`}
+                    onClick={() => setReportCommentId(row.id)}
+                  >
+                    <Flag size={11} />
+                  </IconButton>
+                )}
               </header>
               <p>{row.body}</p>
             </div>
@@ -944,7 +972,13 @@ function Discussion({
           <ArrowRight size={12} />
         </button>
       )}
-      {reportCommentId && market && <ReportDialog market={market} commentId={reportCommentId} onClose={() => setReportCommentId(null)} />}
+      {reportCommentId && market && (
+        <ReportDialog
+          market={market}
+          commentId={reportCommentId}
+          onClose={() => setReportCommentId(null)}
+        />
+      )}
     </div>
   );
 }

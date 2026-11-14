@@ -125,6 +125,12 @@ export default function App() {
   });
   const [clock, setClock] = useState(new Date());
   const bootstrap = useResource<Bootstrap>("/bootstrap", 15000);
+  const operational = useResource<{ tradingEnabled: boolean; reason?: string }>(
+    "/exchange-status",
+    15000,
+  );
+  const tradingEnabled =
+    operational.data?.tradingEnabled !== false && !operational.error;
   const user = bootstrap.data?.user || null,
     groups = bootstrap.data?.groups || [];
   const group = groups.find((g) => g.id === groupId);
@@ -161,9 +167,10 @@ export default function App() {
         (m.outcomes[0]?.probability || 0) < 0.95,
     ) ||
     visibleMarkets[0];
-  const marketFromList =
-    allMarkets.find((m) => m.id === marketId) || defaultMarket;
-  const selectedId = marketFromList?.id || marketId;
+  const marketFromList = marketId
+    ? allMarkets.find((m) => m.id === marketId)
+    : defaultMarket;
+  const selectedId = marketId || defaultMarket?.id;
   useEffect(() => {
     if (!marketId && defaultMarket) setMarketId(defaultMarket.id);
   }, [marketId, defaultMarket?.id]);
@@ -356,6 +363,7 @@ export default function App() {
         </div>
         <button
           className={`profile-button ${user ? "signed-in" : ""}`}
+          aria-label={user ? `Account for ${user.handle}` : "Sign in"}
           onClick={() => setDialog(user ? "profile" : "auth")}
         >
           {user ? (
@@ -480,8 +488,24 @@ export default function App() {
               Create market
             </button>
           )}
-          {exchange === "FRIENDS" && user && market && <IconButton label="Report market" onClick={() => setDialog("report")}><Flag size={13} /></IconButton>}
-          {exchange === "FRIENDS" && group && ["OWNER", "MODERATOR"].includes(group.role) && <IconButton label="Group moderation queue" onClick={() => setDialog("moderation")}><ShieldCheck size={14} /></IconButton>}
+          {exchange === "FRIENDS" && user && market && (
+            <IconButton
+              label="Report market"
+              onClick={() => setDialog("report")}
+            >
+              <Flag size={13} />
+            </IconButton>
+          )}
+          {exchange === "FRIENDS" &&
+            group &&
+            ["OWNER", "MODERATOR"].includes(group.role) && (
+              <IconButton
+                label="Group moderation queue"
+                onClick={() => setDialog("moderation")}
+              >
+                <ShieldCheck size={14} />
+              </IconButton>
+            )}
         </div>
       </div>
       <section className="market-overview">
@@ -565,12 +589,16 @@ export default function App() {
           </div>
           <div className="stat">
             <span>
-              {exchange === "LIVE" ? "Source volume · USD" : "Traded · CR"}
+              {exchange === "LIVE"
+                ? market?.provider === "kalshi"
+                  ? "Source volume · contracts"
+                  : "Source volume · USD"
+                : "Traded · CR"}
             </span>
             <strong>
               {market
                 ? exchange === "LIVE"
-                  ? `$${compact(market.volume)}`
+                  ? `${market.provider === "kalshi" ? "" : "$"}${compact(market.volume)}`
                   : compact(market.volume)
                 : "—"}
             </strong>
@@ -702,6 +730,7 @@ export default function App() {
         </div>
         <TradeTicket
           market={market}
+          tradingEnabled={tradingEnabled}
           outcome={outcome}
           setOutcome={setOutcomeId}
           wallet={wallet}
@@ -740,9 +769,11 @@ export default function App() {
           />
           {bootstrap.error
             ? "Connection interrupted"
-            : bootstrap.loading && !bootstrap.data
-              ? "Connecting"
-              : "Operational"}
+            : !tradingEnabled
+              ? "Trading paused · read-only"
+              : bootstrap.loading && !bootstrap.data
+                ? "Connecting"
+                : "Operational"}
           <span className="status-separator" />v
           {bootstrap.data?.settings.version || "0.1.0"}
           <span className="status-separator" />
@@ -814,8 +845,12 @@ export default function App() {
           onClose={closeDialog}
         />
       )}
-      {dialog === "report" && market && <ReportDialog market={market} onClose={closeDialog} />}
-      {dialog === "moderation" && group && <ModerationDialog group={group} onClose={closeDialog} />}
+      {dialog === "report" && market && (
+        <ReportDialog market={market} onClose={closeDialog} />
+      )}
+      {dialog === "moderation" && group && (
+        <ModerationDialog group={group} onClose={closeDialog} />
+      )}
       {dialog === "create" && user && (
         <CreateMarketDialog
           group={group}

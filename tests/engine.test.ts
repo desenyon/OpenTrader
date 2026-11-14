@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+afterEach(() => vi.unstubAllEnvs());
 import { Store } from "../server/store";
-import { ammCost, reserve, money } from "../server/math";
+import { ammCost, reserve, money, units } from "../server/math";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -441,6 +442,93 @@ describe("external snapshot execution", () => {
     ).toThrow();
     expect(s.positions(u.user.id)).toEqual([]);
   });
+  it("rejects worse average partial buys and expanded sells even when total cash protections pass", () => {
+    const { s, u, market, book, input } = live();
+    const cheap = {
+      ...book,
+      asks: [{ price: 0.5, quantity: 10, source: "EXTERNAL" as const }],
+    };
+    const quote = s.quoteLive(u.user.id, market, cheap, {
+      outcomeId: "yes",
+      side: "BUY",
+      quantity: 10,
+    });
+    expect(quote.averagePrice).toBe(0.5);
+    const worseBuy = {
+      ...book,
+      asks: [{ price: 0.99, quantity: 5, source: "EXTERNAL" as const }],
+    };
+    expect(() =>
+      s.executeLive(
+        u.user.id,
+        market,
+        worseBuy,
+        {
+          ...input,
+          limitPrice: "0.9999",
+          maxTotalCost: "5.05",
+          minFillQuantity: 0,
+          maxAveragePrice: "0.505",
+        },
+        "average-buy",
+      ),
+    ).toThrow("average");
+    expect(s.positions(u.user.id)).toEqual([]);
+    s.executeLive(
+      u.user.id,
+      market,
+      cheap,
+      { ...input, maxTotalCost: "5" },
+      "establish-shares",
+    );
+    const before = s.wallets(u.user.id);
+    const sellQuote = s.quoteLive(
+      u.user.id,
+      market,
+      {
+        ...book,
+        bids: [{ price: 0.5, quantity: 5, source: "EXTERNAL" as const }],
+      },
+      { outcomeId: "yes", side: "SELL", quantity: 10 },
+    );
+    expect(sellQuote.filledQuantity).toBe(5);
+    expect(() =>
+      s.executeLive(
+        u.user.id,
+        market,
+        {
+          ...book,
+          bids: [{ price: 0.25, quantity: 10, source: "EXTERNAL" as const }],
+        },
+        {
+          marketId: market.id,
+          outcomeId: "yes",
+          side: "SELL",
+          quantity: 10,
+          limitPrice: "0.0001",
+          timeInForce: "IOC",
+          minTotalProceeds: "2.475",
+          minAveragePrice: "0.495",
+        },
+        "average-sell",
+      ),
+    ).toThrow("average");
+    expect(s.wallets(u.user.id)).toEqual(before);
+    expect(s.positions(u.user.id)[0]!.quantity).toBe(10);
+  });
+});
+
+it("rejects exponent-form and oversized monetary inputs before expanding decimal values", () => {
+  for (const value of [
+    "1e1000000",
+    "Infinity",
+    "9".repeat(1000),
+    "1000000000001",
+    "0.1234567",
+  ])
+    expect(() => units(value)).toThrow();
+  expect(units("-0.000001")).toBe(-1n);
+  expect(units(0.000001)).toBe(1n);
 });
 
 it("fails closed outside bounded LMSR log-odds instead of issuing free shares", () => {
@@ -536,11 +624,27 @@ it("settles Live positions only from final provider evidence and marks fresh liq
   expect(() => s.approveCorrection(u.user.id, correction.id)).toThrow();
   const reviewer1 = s.register("livereviewerone", "a long password here"),
     reviewer2 = s.register("livereviewertwo", "a long password here");
+  expect(() => s.approveCorrection(reviewer1.user.id, correction.id)).toThrow(
+    "appointed",
+  );
+  vi.stubEnv(
+    "PLATFORM_REVIEWER_IDS",
+    `${reviewer1.user.id},${reviewer2.user.id}`,
+  );
   s.approveCorrection(reviewer1.user.id, correction.id);
   expect(s.wallets(u.user.id).find((w) => w.exchange === "LIVE")!.total).toBe(
     total,
   );
   s.approveCorrection(reviewer2.user.id, correction.id);
+  s.syncLiveMarket(final);
+  const reversal = s
+    .corrections(u.user.id, m.id)
+    .find((item) => item.state === "PENDING")!;
+  s.syncLiveMarket(revised);
+  expect(() => s.approveCorrection(reviewer1.user.id, reversal.id)).toThrow(
+    "reviewed",
+  );
+
   expect(s.wallets(u.user.id).find((w) => w.exchange === "LIVE")!.total).toBe(
     "9993.900000",
   );
@@ -837,4 +941,209 @@ it("shows final outcome probabilities after settlement rather than resetting the
   expect(s.market(a.user.id, m.id).outcomes.map((o) => o.probability)).toEqual([
     1, 0,
   ]);
+});
+
+it("detects inventory projection corruption even when every journal transaction is balanced", () => {
+  const { s, a, m, order } = setup();
+  order();
+  s.db
+    .prepare("UPDATE state SET data=json_set(data, ?, 999) WHERE id=1")
+    .run(`$.markets.\"${m.id}\".q[0]`);
+  expect(s.reconcile(a.user.id).balanced).toBe(false);
+});
+
+it("cannot resurrect an abandoned market by proposing after its frozen longstop before the worker runs", () => {
+  const { s, a, c, m, order, setTime } = setup();
+  order();
+  setTime("2030-01-10T00:00:00Z");
+  expect(() =>
+    s.propose(c.user.id, m.id, {
+      outcomeId: "yes",
+      evidence: "late report",
+      rationale: "late proposal",
+    }),
+  ).toThrow();
+  expect(s.market(a.user.id, m.id).status).toBe("VOID");
+  expect(s.positions(a.user.id)[0]!.quantity).toBe(0);
+  expect(s.reconcile(a.user.id).balanced).toBe(true);
+});
+
+it("enforces average protections for Friends AMM execution atomically", () => {
+  const { s, a, m } = setup(),
+    before = s.wallets(a.user.id);
+  expect(() =>
+    s.execute(
+      a.user.id,
+      {
+        marketId: m.id,
+        outcomeId: "yes",
+        side: "BUY",
+        quantity: 100,
+        limitPrice: "0.9999",
+        timeInForce: "IOC",
+        maxTotalCost: "100",
+        maxAveragePrice: "0.50",
+      },
+      "friends-average",
+    ),
+  ).toThrow("average");
+  expect(s.wallets(a.user.id)).toEqual(before);
+  expect(s.positions(a.user.id)).toEqual([]);
+});
+
+it("returns validation errors for exponential monetary order fields without committing any order", () => {
+  const { s, a, m } = setup();
+  const input = {
+    marketId: m.id,
+    outcomeId: "yes",
+    side: "BUY" as const,
+    quantity: 1,
+    limitPrice: "0.9999",
+    timeInForce: "IOC" as const,
+  };
+  for (const field of [
+    "limitPrice",
+    "maxTotalCost",
+    "minTotalProceeds",
+    "maxAveragePrice",
+    "minAveragePrice",
+  ]) {
+    let failure;
+    try {
+      s.execute(
+        a.user.id,
+        { ...input, [field]: "1e1000000" },
+        "exponent-" + field,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ statusCode: 422 });
+  }
+  expect(s.orders(a.user.id)).toEqual([]);
+  expect(s.positions(a.user.id)).toEqual([]);
+});
+
+it("rejects resting average promises that contradict their frozen per-share limit", () => {
+  const { s, a, order } = setup();
+  expect(() =>
+    order(a.user.id, "BUY", 10, "0.4", {
+      timeInForce: "GTC",
+      maxAveragePrice: "0.39",
+    }),
+  ).toThrow("resting");
+  order(a.user.id, "BUY", 10);
+  expect(() =>
+    order(a.user.id, "SELL", 2, "0.6", {
+      timeInForce: "GTD",
+      expiresAt: "2030-01-02T00:00:00Z",
+      minAveragePrice: "0.61",
+    }),
+  ).toThrow("resting");
+  expect(
+    order(a.user.id, "BUY", 10, "0.4", {
+      timeInForce: "GTC",
+      maxAveragePrice: "0.40",
+    }).order.status,
+  ).toBe("OPEN");
+});
+
+it("waits for the frozen observation deadline and starts the abandoned longstop afterward", () => {
+  const { s, a, b, c, g, m, setTime } = setup();
+  const rules = { ...m.rules!, observationAt: "2030-01-05T00:00:00Z" };
+  const delayed = s.createMarket(a.user.id, {
+    groupId: g.id,
+    question: "Will the later official observation exceed 5?",
+    category: "Science",
+    closeAt: "2030-01-02T00:00:00Z",
+    b: 500,
+    rules,
+  });
+  const resolved = s.createMarket(a.user.id, {
+    groupId: g.id,
+    question: "Will another later official observation exceed 5?",
+    category: "Science",
+    closeAt: "2030-01-02T00:00:00Z",
+    b: 500,
+    rules,
+  });
+  s.approveMarket(b.user.id, delayed.id);
+  s.approveMarket(b.user.id, resolved.id);
+  s.execute(
+    a.user.id,
+    {
+      marketId: delayed.id,
+      outcomeId: "yes",
+      side: "BUY",
+      quantity: 10,
+      limitPrice: "0.9999",
+      timeInForce: "IOC",
+    },
+    "delayed-observation-buy",
+  );
+  setTime("2030-01-02T01:00:00Z");
+  expect(() =>
+    s.propose(c.user.id, delayed.id, {
+      outcomeId: "no",
+      evidence: "early report",
+      rationale: "observation still pending",
+    }),
+  ).toThrow("observation");
+  expect(s.market(a.user.id, delayed.id).status).toBe("CLOSED");
+  setTime("2030-01-05T01:00:00Z");
+  s.tick();
+  expect(s.market(a.user.id, delayed.id).status).toBe("CLOSED");
+  expect(
+    s.propose(c.user.id, resolved.id, {
+      outcomeId: "yes",
+      evidence: "final observed value",
+      rationale: "observed after deadline",
+    }).status,
+  ).toBe("RESOLVING");
+  setTime("2030-01-08T00:00:01Z");
+  s.tick();
+  expect(s.market(a.user.id, delayed.id).status).toBe("VOID");
+  expect(s.market(a.user.id, resolved.id).status).toBe("RESOLVED");
+  expect(
+    s.positions(a.user.id).find((p) => p.marketId === delayed.id)!.quantity,
+  ).toBe(0);
+  expect(s.reconcile(a.user.id).balanced).toBe(true);
+});
+
+it("rejects an observation deadline before trading close", () => {
+  const { s, a, g, m } = setup();
+  expect(() =>
+    s.createMarket(a.user.id, {
+      groupId: g.id,
+      question: "Will a value be observed before this market closes?",
+      category: "Science",
+      closeAt: "2030-01-03T00:00:00Z",
+      b: 500,
+      rules: { ...m.rules!, observationAt: "2030-01-02T00:00:00Z" },
+    }),
+  ).toThrow("observation");
+});
+
+it("normalizes authored refund promises into the fixed binary void policy before approval", () => {
+  const { s, a, b, g, m } = setup();
+  const draft = s.createMarket(a.user.id, {
+    groupId: g.id,
+    question: "Will the published measurement exceed 10?",
+    category: "Science",
+    closeAt: "2030-01-03T00:00:00Z",
+    b: 500,
+    rules: {
+      ...m.rules!,
+      voidPolicy: "Refund each holder their original purchase cost.",
+    },
+  });
+  expect(draft.rules!.voidPolicy).toContain("0.5 play credits per share");
+  expect(draft.rules!.voidPolicy).toContain(
+    "72 hours after the observation deadline",
+  );
+  expect(draft.rules!.voidPolicy).toContain(
+    "48 hours after the challenge window ends",
+  );
+  const frozen = draft.rules!.voidPolicy;
+  expect(s.approveMarket(b.user.id, draft.id).rules!.voidPolicy).toBe(frozen);
 });

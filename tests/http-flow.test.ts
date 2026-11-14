@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { createApp } from "../server/app";
 import { Store } from "../server/store";
@@ -7,6 +7,7 @@ import type { Market, OrderInput, OrderReceipt, Quote } from "../shared/types";
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
+  vi.unstubAllEnvs();
 });
 
 async function fixture() {
@@ -64,6 +65,39 @@ async function fixture() {
 }
 
 describe("HTTP trading and privacy", () => {
+  it("blocks new orders in operational read-only mode but still returns committed receipts", async () => {
+    vi.stubEnv("TRADING_PAUSED", "true");
+    const { app, store, alice, market, cookie } = await fixture();
+    const input: OrderInput = {
+      marketId: market.id,
+      outcomeId: market.outcomes[0]!.id,
+      side: "BUY",
+      quantity: 1,
+      limitPrice: "0.59",
+      maxTotalCost: "0.59",
+      timeInForce: "IOC",
+    };
+    const committed = store.execute(alice.user.id, input, "already-committed");
+    const status = await app.inject("/api/exchange-status");
+    expect(status.statusCode).toBe(200);
+    expect(status.json().tradingEnabled).toBe(false);
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/orders",
+      headers: { cookie, "idempotency-key": "already-committed" },
+      payload: input,
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().order.id).toBe(committed.order.id);
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/orders",
+      headers: { cookie, "idempotency-key": "new-intent" },
+      payload: input,
+    });
+    expect(rejected.statusCode).toBe(503);
+    expect(store.positions(alice.user.id)[0]!.quantity).toBe(1);
+  });
   it("returns one committed execution for 100 simultaneous retries of the same key", async () => {
     const { app, store, alice, market, cookie } = await fixture();
     const input: OrderInput = {

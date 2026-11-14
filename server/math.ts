@@ -7,10 +7,31 @@ export function money(value: bigint | string): string {
   return `${n < 0n ? "-" : ""}${(n < 0n ? -n : n) / 1_000_000n}.${((n < 0n ? -n : n) % 1_000_000n).toString().padStart(6, "0")}`;
 }
 export function units(value: string | number): bigint {
-  const d = new D(value).mul(MICRO);
-  if (!d.isFinite() || !d.isInteger())
-    throw new Error("Cash requires at most six decimal places");
-  return BigInt(d.toFixed(0));
+  let text: string;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Math.abs(value) > 1_000_000_000_000)
+      throw new Error("Cash is outside the supported range");
+    text = value.toFixed(6);
+    if (Number(text) !== value)
+      throw new Error("Cash requires at most six decimal places");
+  } else if (typeof value === "string") text = value;
+  else throw new Error("Cash requires a plain decimal");
+  // Reject exponent notation and oversized input before constructing Decimal or BigInt.
+  if (
+    text.length > 22 ||
+    !/^-?(?:[0-9]{1,13}(?:\.[0-9]{1,6})?|\.[0-9]{1,6})$/.test(text)
+  )
+    throw new Error(
+      "Cash requires a bounded plain decimal with at most six decimal places",
+    );
+  const negative = text.startsWith("-"),
+    unsigned = negative ? text.slice(1) : text,
+    [whole, fraction = ""] = unsigned.split(".");
+  const amount =
+    BigInt(whole || "0") * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
+  if (amount > 1_000_000_000_000_000_000n)
+    throw new Error("Cash is outside the supported range");
+  return negative ? -amount : amount;
 }
 export function probability(q: number[], b: number, index: number): number {
   const max = Math.max(...q);

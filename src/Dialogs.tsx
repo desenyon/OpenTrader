@@ -22,6 +22,7 @@ import type {
 } from "../shared/types";
 import { api, patch, post, refreshAll, useResource } from "./api";
 import { downloadJournal } from "./journal";
+import { BINARY_VOID_POLICY } from "../shared/rules";
 import { PrivacyRequest } from "./Moderation";
 import { credits, date, errorMessage, percent } from "./utils";
 import {
@@ -87,14 +88,15 @@ export function AuthDialog({
               placeholder="your_handle"
               required
               minLength={3}
-              maxLength={24}
-              pattern="[a-zA-Z0-9_]+"
+              maxLength={30}
+              pattern="[a-zA-Z][a-zA-Z0-9_-]{2,29}"
+              title="Start with a letter; use 3–30 letters, digits, underscores, or hyphens"
             />
           </Field>
           <Field
             label="Password"
             hint={
-              mode === "register" ? "Use at least 10 characters." : undefined
+              mode === "register" ? "Use at least 12 characters." : undefined
             }
           >
             <input
@@ -104,7 +106,7 @@ export function AuthDialog({
                 mode === "login" ? "current-password" : "new-password"
               }
               required
-              minLength={mode === "register" ? 10 : 1}
+              minLength={mode === "register" ? 12 : 1}
               maxLength={200}
             />
           </Field>
@@ -271,12 +273,53 @@ export function GroupsDialog({
   const members = useResource<Member[]>(
     tab === "members" && groupId ? `/groups/${groupId}/members` : null,
   );
+  const mayModerate = !!group && ["OWNER", "MODERATOR"].includes(group.role);
+  const invites = useResource<
+    { id: string; expiresAt: string; uses: number; revoked: boolean }[]
+  >(
+    tab === "invite" && groupId && mayModerate
+      ? `/groups/${groupId}/invites`
+      : null,
+  );
   const [error, setError] = useState("");
   const updateMember = async (id: string, role: string) => {
     try {
       await patch(`/groups/${groupId}/members`, { userId: id, role });
       refreshAll();
       setNotice("Member role updated.");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+  const changeAdmission = async (member: Member) => {
+    const removing = member.status === "ACTIVE";
+    if (
+      removing &&
+      !window.confirm(
+        `Remove @${member.handle}? Their access stops and open orders are canceled; holdings and settlement records remain intact.`,
+      )
+    )
+      return;
+    try {
+      await patch(`/groups/${groupId}/members`, {
+        userId: member.id,
+        status: removing ? "REMOVED" : "ACTIVE",
+      });
+      refreshAll();
+      setNotice(
+        removing
+          ? "Member removed; economic records preserved."
+          : "Membership restored without issuing another season allocation.",
+      );
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+  const revoke = async (id: string) => {
+    try {
+      await api(`/groups/${groupId}/invites/${id}`, { method: "DELETE" });
+      refreshAll();
+      setNotice("Invitation revoked.");
     } catch (reason) {
       setError(errorMessage(reason));
     }
@@ -464,6 +507,35 @@ export function GroupsDialog({
               ) : (
                 <Empty title="Create a group first" />
               ))}
+            {tab === "invite" && (
+              <div className="invite-history">
+                {!mayModerate && group && (
+                  <p className="warning-note">
+                    Only group owners and moderators can issue or revoke
+                    invitations.
+                  </p>
+                )}
+                {invites.data?.map((item) => (
+                  <div key={item.id}>
+                    <span>
+                      {item.revoked
+                        ? "Revoked"
+                        : item.uses === 0
+                          ? "Used"
+                          : `${item.uses} use${item.uses === 1 ? "" : "s"} left`}
+                      <small>Expires {date(item.expiresAt)}</small>
+                    </span>
+                    <button
+                      className="button small"
+                      disabled={item.revoked || item.uses === 0}
+                      onClick={() => void revoke(item.id)}
+                    >
+                      Revoke
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             {tab === "join" && (
               <ActionForm
                 submitLabel="Join group"
@@ -529,6 +601,18 @@ export function GroupsDialog({
                       ) : (
                         <Badge>{member.role}</Badge>
                       )}
+                      {mayModerate &&
+                        member.id !== user.id &&
+                        member.role !== "OWNER" &&
+                        (group?.role === "OWNER" ||
+                          member.role === "MEMBER") && (
+                          <button
+                            className="button small"
+                            onClick={() => void changeAdmission(member)}
+                          >
+                            {member.status === "ACTIVE" ? "Remove" : "Re-admit"}
+                          </button>
+                        )}
                     </div>
                   ))}
                 </div>
@@ -684,12 +768,16 @@ export function CreateMarketDialog({
                 placeholder="Official result page, published report, or archived statement"
               />
             </Field>
-            <Field label="Void / ambiguity policy">
+            <Field
+              label="Void / ambiguity policy"
+              hint="Fixed binary policy. Review this before submitting the market."
+            >
               <textarea
                 name="voidPolicy"
-                rows={2}
+                rows={3}
                 required
-                defaultValue="Neutral void pays 0.50 CR per share if no result is proposed within 72 hours of close, or if a dispute has no independent confirming quorum within 48 hours after its challenge window. Ambiguous evidence resolves to neutral void."
+                readOnly
+                value={BINARY_VOID_POLICY}
               />
             </Field>
             <div className="form-grid">
@@ -775,6 +863,45 @@ export function CreateMarketDialog({
                   Includes 1 CR rounding allowance. Reserved from the group
                   treasury, currently {credits(group.treasury)} CR.
                 </span>
+              </p>
+            </div>
+            <div className="liquidity-preview">
+              <div className="form-section-heading">Starting price impact</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Buy YES</th>
+                    <th>Indicative cost · CR</th>
+                    <th>YES after trade</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[10, 100, 500].map((quantity) => {
+                    const depth = Number(b);
+                    const t = quantity / depth;
+                    const supported = depth >= 10 && depth <= 10000 && t <= 30;
+                    const cost = supported
+                      ? depth * (t + Math.log1p(Math.exp(-t)) - Math.LN2)
+                      : 0;
+                    return (
+                      <tr key={quantity}>
+                        <td>{quantity} shares</td>
+                        <td>
+                          {supported
+                            ? credits(cost)
+                            : "Outside supported range"}
+                        </td>
+                        <td>
+                          {supported ? percent(1 / (1 + Math.exp(-t))) : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className="form-footnote">
+                Illustrative uniform 50/50 starting state, no peers or fees.
+                Only an exact server quote can authorize a trade.
               </p>
             </div>
           </ActionForm>

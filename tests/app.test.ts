@@ -19,7 +19,12 @@ afterEach(async () => {
 describe("application security boundary", () => {
   it("rejects a different localhost application as an origin", async () => {
     const a = await app();
-    const response = await a.inject({ method: "POST", url: "/api/auth/register", headers: { origin: "http://localhost:4444", host: "localhost:3001" }, payload: { handle: "local_attacker", password: "long-enough-password" } });
+    const response = await a.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      headers: { origin: "http://localhost:4444", host: "localhost:3001" },
+      payload: { handle: "local_attacker", password: "long-enough-password" },
+    });
     expect(response.statusCode).toBe(403);
     expect(response.json().code).toBe("ORIGIN_REJECTED");
   });
@@ -28,7 +33,14 @@ describe("application security boundary", () => {
     const a = await app();
     let status = 0;
     for (let i = 0; i < 21; i++) {
-      status = (await a.inject({ method: "POST", url: "/api/auth/login", headers: { cookie: `session=not-a-real-session-${i}` }, payload: { handle: "unknown", password: "test-only-password" } })).statusCode;
+      status = (
+        await a.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          headers: { cookie: `session=not-a-real-session-${i}` },
+          payload: { handle: "unknown", password: "test-only-password" },
+        })
+      ).statusCode;
     }
     expect(status).toBe(429);
   });

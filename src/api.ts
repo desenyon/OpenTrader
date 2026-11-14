@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createResourceRequest } from "./resource-request";
 
 export class ApiError extends Error {
   code: string;
@@ -51,9 +52,9 @@ export function useResource<T>(path: string | null, interval = 0) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
-  const [revision, setRevision] = useState(0);
   const current = useRef(path);
-  const refresh = useCallback(() => setRevision((v) => v + 1), []);
+  const requestRef = useRef<() => void>(() => {});
+  const refresh = useCallback(() => requestRef.current(), []);
   useEffect(() => {
     listeners.add(refresh);
     return () => {
@@ -61,36 +62,36 @@ export function useResource<T>(path: string | null, interval = 0) {
     };
   }, [refresh]);
   useEffect(() => {
-    let active = true;
-    let pending = false;
     if (current.current !== path) {
       current.current = path;
       setData(undefined);
       setUpdatedAt(null);
       setError("");
     }
-    if (!path) return;
-    const fetchResource = async () => {
-      if (pending || document.visibilityState === "hidden") return;
-      pending = true;
-      setLoading(true);
-      try {
-        const result = await api<T>(path);
-        if (active) {
-          setData(result);
-          setError("");
-          setUpdatedAt(Date.now());
-        }
-      } catch (reason) {
-        if (active)
-          setError(
-            reason instanceof Error ? reason.message : "Connection failed",
-          );
-      } finally {
-        pending = false;
-        if (active) setLoading(false);
-      }
+    if (!path) {
+      requestRef.current = () => {};
+      setLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    const resource = createResourceRequest(
+      () => api<T>(path, { signal: controller.signal }),
+      (result) => {
+        setData(result);
+        setError("");
+        setUpdatedAt(Date.now());
+      },
+      (reason) =>
+        setError(
+          reason instanceof Error ? reason.message : "Connection failed",
+        ),
+      setLoading,
+    );
+    const fetchResource = () => {
+      if (document.visibilityState === "hidden") return;
+      void resource.refresh();
     };
+    requestRef.current = fetchResource;
     void fetchResource();
     const timer = interval
       ? window.setInterval(() => void fetchResource(), interval)
@@ -100,11 +101,12 @@ export function useResource<T>(path: string | null, interval = 0) {
     };
     document.addEventListener("visibilitychange", visible);
     return () => {
-      active = false;
+      resource.dispose();
+      controller.abort();
       if (timer) clearInterval(timer);
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [path, interval, revision]);
+  }, [path, interval]);
   return {
     data: current.current === path ? data : undefined,
     error: current.current === path ? error : "",

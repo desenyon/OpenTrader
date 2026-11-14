@@ -182,6 +182,8 @@ export interface OrderInput {
   limitPrice: string;
   timeInForce: "IOC" | "GTC" | "GTD";
   maxTotalCost?: string;
+  maxAveragePrice?: string;
+  minAveragePrice?: string;
   minTotalProceeds?: string;
   minFillQuantity?: number;
   expiresAt?: string;

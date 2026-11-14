@@ -19,6 +19,8 @@
     "shared",
     "tests",
     "vite.config.ts",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "tsup.config.ts",
+    "scripts/benchmark.ts"
   ]
 }

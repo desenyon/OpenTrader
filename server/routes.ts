@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { Store, fail } from "./store.js";
 import { currentUser, requireUser } from "./auth.js";
+import { friendsHistory } from "./friends-history.js";
 import type { Market, OrderBook, Candle } from "../shared/types.js";
 interface Providers {
   listMarkets(provider?: string, search?: string): Promise<Market[]>;
@@ -29,6 +30,8 @@ const orderSchema = z.object({
   limitPrice: z.string(),
   timeInForce: z.enum(["IOC", "GTC", "GTD"]),
   maxTotalCost: z.string().optional(),
+  maxAveragePrice: z.string().optional(),
+  minAveragePrice: z.string().optional(),
   minTotalProceeds: z.string().optional(),
   minFillQuantity: z.number().int().optional(),
   expiresAt: z.string().optional(),
@@ -51,7 +54,11 @@ const liveId = (value: string) =>
 export async function registerRoutes(
   app: FastifyInstance,
   store: Store,
-  options: { providers?: Providers; liveEnabled?: boolean } = {},
+  options: {
+    providers?: Providers;
+    liveEnabled?: boolean;
+    canTrade?: () => boolean;
+  } = {},
 ) {
   const uid = (r: FastifyRequest) => requireUser(r, store).id;
   const providers = () => {
@@ -62,6 +69,21 @@ export async function registerRoutes(
         "External market data is disabled on this server",
       );
     return options.providers;
+  };
+  const socialMarket = async (request: FastifyRequest) => {
+    const userId = uid(request),
+      marketId = param(request);
+    if (liveId(marketId)) {
+      const market = await providers().getMarket(marketId);
+      if (market.id !== marketId)
+        fail(
+          422,
+          "MARKET_MISMATCH",
+          "Provider metadata does not match the requested market",
+        );
+      store.syncLiveMarket(market);
+    }
+    return { userId, marketId };
   };
   const session = (
     request: FastifyRequest,
@@ -86,7 +108,15 @@ export async function registerRoutes(
   }));
   app.post(
     "/api/auth/register",
-    { config: { rateLimit: { max: 10, timeWindow: "15 minutes", keyGenerator: (request: FastifyRequest) => request.ip } } },
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: "15 minutes",
+          keyGenerator: (request: FastifyRequest) => request.ip,
+        },
+      },
+    },
     async (request, reply) => {
       if (process.env.REGISTRATION_OPEN === "false")
         fail(
@@ -109,7 +139,15 @@ export async function registerRoutes(
   );
   app.post(
     "/api/auth/login",
-    { config: { rateLimit: { max: 20, timeWindow: "15 minutes", keyGenerator: (request: FastifyRequest) => request.ip } } },
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: "15 minutes",
+          keyGenerator: (request: FastifyRequest) => request.ip,
+        },
+      },
+    },
     async (request, reply) => {
       const body = credentials.parse(request.body),
         result = store.login(body.handle, body.password);
@@ -241,13 +279,19 @@ export async function registerRoutes(
   app.get("/api/markets/:id/history", async (request) => {
     const marketId = param(request),
       q = query(request);
+    const interval = z
+      .enum(["1h", "6h", "1d", "1w", "max"])
+      .parse(q.interval ?? "1d");
     return liveId(marketId)
-      ? providers().getHistory(
+      ? providers().getHistory(marketId, q.outcomeId ?? "yes", interval)
+      : friendsHistory(
+          store,
+          uid(request),
           marketId,
           q.outcomeId ?? "yes",
-          q.interval ?? "1h",
-        )
-      : store.history(uid(request), marketId, q.interval, q.outcomeId);
+          interval,
+          (q.series ?? "amm") as "amm" | "trades",
+        );
   });
   app.post("/api/markets/:id/quote", async (request) => {
     const userId = uid(request),
@@ -267,6 +311,12 @@ export async function registerRoutes(
       fail(422, "IDEMPOTENCY_REQUIRED", "Idempotency-Key header is required");
     const replay = store.replayOrder(userId, input, key);
     if (replay) return replay;
+    if (options.canTrade && !options.canTrade())
+      fail(
+        503,
+        "EXCHANGE_READ_ONLY",
+        "Trading is paused for accounting review; committed history remains available",
+      );
     if (!liveId(input.marketId)) return store.execute(userId, input, key);
     const p = providers(),
       market = await p.getMarket(input.marketId),
@@ -345,30 +395,29 @@ export async function registerRoutes(
     }
     return store.fills(uid(request), param(request));
   });
-  app.get("/api/markets/:id/comments", async (request) =>
-    store.comments(uid(request), param(request)),
-  );
-  app.post("/api/markets/:id/comments", async (request) =>
-    store.comment(
-      uid(request),
-      param(request),
-      z.object({ body: z.string() }).parse(request.body).body,
-    ),
-  );
+  app.get("/api/markets/:id/comments", async (request) => {
+    const { userId, marketId } = await socialMarket(request);
+    return store.comments(userId, marketId);
+  });
+  app.post("/api/markets/:id/comments", async (request) => {
+    const body = z.object({ body: z.string() }).parse(request.body),
+      { userId, marketId } = await socialMarket(request);
+    return store.comment(userId, marketId, body.body);
+  });
   app.get("/api/watchlist", async (request) => store.watchlist(uid(request)));
-  app.post("/api/markets/:id/watch", async (request) =>
-    store.watch(uid(request), param(request)),
-  );
-  app.get("/api/markets/:id/forecast", async (request) =>
-    store.forecasts(uid(request), param(request)),
-  );
-  app.post("/api/markets/:id/forecast", async (request) =>
-    store.forecast(
-      uid(request),
-      param(request),
-      z.object({ probability: z.number() }).parse(request.body).probability,
-    ),
-  );
+  app.post("/api/markets/:id/watch", async (request) => {
+    const { userId, marketId } = await socialMarket(request);
+    return store.watch(userId, marketId);
+  });
+  app.get("/api/markets/:id/forecast", async (request) => {
+    const { userId, marketId } = await socialMarket(request);
+    return store.forecasts(userId, marketId);
+  });
+  app.post("/api/markets/:id/forecast", async (request) => {
+    const body = z.object({ probability: z.number() }).parse(request.body),
+      { userId, marketId } = await socialMarket(request);
+    return store.forecast(userId, marketId, body.probability);
+  });
   app.post("/api/markets/:id/resolution", async (request) =>
     store.propose(
       uid(request),

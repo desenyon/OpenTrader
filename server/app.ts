@@ -9,6 +9,7 @@ import { registerRoutes } from "./routes";
 import { currentUser } from "./auth";
 import { MarketDataService } from "./providers";
 import { registerModerationRoutes } from "./moderation";
+import { createReconciliationGuard } from "./reconciliation";
 
 export interface AppOptions {
   databasePath?: string;
@@ -41,7 +42,11 @@ export async function createApp(
             "req.body.token",
           ],
           serializers: {
-            req: (request) => ({ method: request.method, url: String(request.url ?? "").split("?")[0], remoteAddress: request.ip }),
+            req: (request) => ({
+              method: request.method,
+              url: String(request.url ?? "").split("?")[0],
+              remoteAddress: request.ip,
+            }),
           },
         }
       : false,
@@ -58,6 +63,13 @@ export async function createApp(
         "./data/opentrader.sqlite",
     });
   const liveEnabled = options.liveEnabled ?? enabledLiveData();
+  const accounting = createReconciliationGuard(store, {
+    onFailure: (state) =>
+      app.log.error(
+        { reason: state.reason, diagnostics: state.diagnostics },
+        "Trading suspended by accounting reconciliation",
+      ),
+  });
   const providers =
     options.providers ?? new MarketDataService({ enabled: liveEnabled });
   await app.register(cookie);
@@ -68,7 +80,11 @@ export async function createApp(
       const user = currentUser(request, store);
       return user ? `user:${user.id}` : `ip:${request.ip}`;
     },
-    errorResponseBuilder: () => Object.assign(new Error("Too many requests. Try again shortly."), { statusCode: 429, code: "RATE_LIMITED" }),
+    errorResponseBuilder: () =>
+      Object.assign(new Error("Too many requests. Try again shortly."), {
+        statusCode: 429,
+        code: "RATE_LIMITED",
+      }),
   });
 
   app.addHook("onRequest", async (request, reply) => {
@@ -99,18 +115,17 @@ export async function createApp(
             origin.origin === new URL(process.env.PUBLIC_ORIGIN).origin);
         if (process.env.NODE_ENV !== "production")
           accepted ||=
-            ["http://localhost:3000", "http://127.0.0.1:3000"].includes(origin.origin) &&
-            ["localhost", "127.0.0.1", "[::1]"].includes(own.hostname);
+            ["http://localhost:3000", "http://127.0.0.1:3000"].includes(
+              origin.origin,
+            ) && ["localhost", "127.0.0.1", "[::1]"].includes(own.hostname);
       } catch {
         accepted = false;
       }
       if (!accepted)
-        return reply
-          .status(403)
-          .send({
-            error: "This request did not originate from OpenTrader.",
-            code: "ORIGIN_REJECTED",
-          });
+        return reply.status(403).send({
+          error: "This request did not originate from OpenTrader.",
+          code: "ORIGIN_REJECTED",
+        });
     }
   });
 
@@ -128,26 +143,35 @@ export async function createApp(
           ? error.statusCode
           : 500;
       if (status >= 500) request.log.error({ err: error }, "Request failed");
-      return reply
-        .status(status)
-        .send({
-          error:
-            status >= 500
-              ? "The request could not be completed. Your committed trades remain recorded."
-              : validation
-                ? "Check the request fields and try again."
-                : error.message,
-          code: validation
-            ? "VALIDATION_ERROR"
-            : (error.code ??
-              (status === 413 ? "BODY_TOO_LARGE" : "REQUEST_FAILED")),
-        });
+      return reply.status(status).send({
+        error:
+          status >= 500
+            ? "The request could not be completed. Your committed trades remain recorded."
+            : validation
+              ? "Check the request fields and try again."
+              : error.message,
+        code: validation
+          ? "VALIDATION_ERROR"
+          : (error.code ??
+            (status === 413 ? "BODY_TOO_LARGE" : "REQUEST_FAILED")),
+      });
     },
   );
 
-  app.get("/api/health", async () => ({ status: "ok", version: "0.1.0" }));
+  app.get("/api/health", async () => ({
+    status: accounting.status().tradingEnabled ? "ok" : "read-only",
+    version: "0.1.0",
+  }));
+  app.get("/api/exchange-status", async () => {
+    const { tradingEnabled, checkedAt, reason } = accounting.status();
+    return { tradingEnabled, checkedAt, reason };
+  });
   app.get("/api/live/status", async () => providers.status());
-  await registerRoutes(app, store, { providers, liveEnabled });
+  await registerRoutes(app, store, {
+    providers,
+    liveEnabled,
+    canTrade: () => accounting.status().tradingEnabled,
+  });
   await registerModerationRoutes(app, store);
 
   // Due actions are also checked inline by the engine; this timer makes
@@ -161,16 +185,18 @@ export async function createApp(
   }, 5000);
   maintenance.unref();
   let synchronizing = false;
+  let shuttingDown = false;
   const syncProviders = async () => {
-    if (!liveEnabled || synchronizing) return;
+    if (!liveEnabled || synchronizing || shuttingDown) return;
     synchronizing = true;
     try {
       const ids = store.liveMarketIds();
-      for (let offset = 0; offset < ids.length; offset += 4) {
+      for (let offset = 0; offset < ids.length && !shuttingDown; offset += 4) {
         await Promise.all(
           ids.slice(offset, offset + 4).map(async (id) => {
             try {
-              store.syncLiveMarket(await providers.getMarket(id));
+              const market = await providers.getMarket(id);
+              if (!shuttingDown) store.syncLiveMarket(market);
             } catch (error) {
               app.log.warn(
                 { marketId: id, err: error },
@@ -195,12 +221,10 @@ export async function createApp(
     async (request, reply) => {
       const user = currentUser(request, store);
       if (!user)
-        return reply
-          .status(401)
-          .send({
-            error: "Sign in to receive private updates.",
-            code: "AUTH_REQUIRED",
-          });
+        return reply.status(401).send({
+          error: "Sign in to receive private updates.",
+          code: "AUTH_REQUIRED",
+        });
       const groupId = request.query.groupId;
       const authorized = () => {
         if (!currentUser(request, store)) return false;
@@ -256,6 +280,7 @@ export async function createApp(
       root: staticRoot,
       prefix: "/",
       cacheControl: false,
+      preCompressed: true,
     });
     app.addHook("onSend", async (request, reply, payload) => {
       if (request.url.startsWith("/assets/"))
@@ -274,10 +299,14 @@ export async function createApp(
     }
     return reply.status(404).send({ error: "Not found.", code: "NOT_FOUND" });
   });
-  app.addHook("onClose", async () => {
+  app.addHook("preClose", async () => {
+    shuttingDown = true;
+    accounting.close();
     clearInterval(maintenance);
     clearInterval(providerMaintenance);
     for (const cleanup of streams) cleanup();
+  });
+  app.addHook("onClose", async () => {
     if (!options.store) store.close();
   });
   return app;

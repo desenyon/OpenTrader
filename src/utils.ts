@@ -15,11 +15,11 @@ export const compact = (value: number | undefined) =>
 export const cents = (value: number | undefined) =>
   value === undefined || !Number.isFinite(value)
     ? "—"
-    : `${(value * 100).toFixed(1)}¢`;
+    : `${(value * 100).toFixed(2)}¢`;
 export const percent = (value: number | undefined) =>
   value === undefined || !Number.isFinite(value)
     ? "—"
-    : `${(value * 100).toFixed(1)}%`;
+    : `${(value * 100).toFixed(2)}%`;
 export const date = (value: string | undefined) =>
   value
     ? new Date(value).toLocaleString([], {

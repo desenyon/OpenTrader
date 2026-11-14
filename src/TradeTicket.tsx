@@ -20,7 +20,8 @@ import type {
   User,
   Wallet,
 } from "../shared/types";
-import { post, refreshAll } from "./api";
+import { ApiError, post, refreshAll } from "./api";
+import { protectionForQuote } from "./order-protection";
 import { cents, credits, errorMessage, percent, uid } from "./utils";
 import { Badge, ErrorNote, Loading, Modal } from "./ui";
 
@@ -34,6 +35,7 @@ export function TradeTicket({
   positions,
   onSignIn,
   onOrders,
+  tradingEnabled = true,
 }: {
   market?: Market;
   outcome?: Outcome;
@@ -44,6 +46,7 @@ export function TradeTicket({
   positions: Position[];
   onSignIn: () => void;
   onOrders: () => void;
+  tradingEnabled?: boolean;
 }) {
   const [side, setSide] = useState<Side>("BUY"),
     [mode, setMode] = useState<"IOC" | "GTC" | "GTD">("IOC");
@@ -69,6 +72,7 @@ export function TradeTicket({
     setError("");
     setReceipt(null);
     if (outcome) setPrice((outcome.probability * 100).toFixed(2));
+    if (market?.exchange === "LIVE") setMode("IOC");
   }, [market?.id, outcome?.id, side, mode]);
   useEffect(() => {
     setQuote(null);
@@ -106,11 +110,14 @@ export function TradeTicket({
   const effectiveLimit =
     mode === "IOC" ? (side === "BUY" ? 0.9999 : 0.0001) : limit;
   // Round conservatively to the server's six-decimal credit precision.
-  const protectedCash = quote
-    ? side === "BUY"
-      ? (Math.ceil(Number(quote.estimatedCash) * 1.01 * 1e6) / 1e6).toFixed(6)
-      : (Math.floor(Number(quote.estimatedCash) * 0.99 * 1e6) / 1e6).toFixed(6)
-    : "0";
+  const quoteProtection =
+    quote && quote.filledQuantity > 0
+      ? protectionForQuote(quote, side)
+      : undefined;
+  const protectedCash =
+    (side === "BUY"
+      ? quoteProtection?.maxTotalCost
+      : quoteProtection?.minTotalProceeds) ?? "0";
   const defaultProtection =
     mode === "IOC" || side === "SELL"
       ? protectedCash
@@ -133,7 +140,7 @@ export function TradeTicket({
         outcomeId: outcome.id,
         side,
         quantity: amount,
-        limitPrice: String(effectiveLimit),
+        limitPrice: effectiveLimit.toFixed(4),
       });
       setQuote(result);
       setReview(true);
@@ -154,8 +161,9 @@ export function TradeTicket({
           outcomeId: outcome!.id,
           side,
           quantity: amount,
-          limitPrice: String(effectiveLimit),
+          limitPrice: effectiveLimit.toFixed(4),
           timeInForce: mode,
+          ...(mode === "IOC" ? quoteProtection : {}),
           ...(side === "BUY"
             ? { maxTotalCost: hardProtection }
             : { minTotalProceeds: hardProtection }),
@@ -183,6 +191,22 @@ export function TradeTicket({
       refreshAll();
     } catch (reason) {
       setReview(false);
+      if (
+        !uncertain &&
+        reason instanceof ApiError &&
+        reason.status >= 400 &&
+        reason.status < 500 &&
+        reason.status !== 408
+      ) {
+        submission.current = null;
+        setUncertain(false);
+        setQuote(null);
+        setError(
+          `${errorMessage(reason)} No new order was accepted; refresh the quote to try again.`,
+        );
+        refreshAll();
+        return;
+      }
       setUncertain(true);
       setError(
         `${errorMessage(reason)} Retry checks the original confirmed order, even if you change the selected market; it cannot place a duplicate.`,
@@ -208,7 +232,12 @@ export function TradeTicket({
           </button>
           <button
             className={mode !== "IOC" ? "selected" : ""}
-            disabled={uncertain || busy}
+            disabled={uncertain || busy || market?.exchange === "LIVE"}
+            title={
+              market?.exchange === "LIVE"
+                ? "Live simulation supports protected immediate orders; resting limits are available in Friends."
+                : undefined
+            }
             onClick={() => setMode("GTC")}
           >
             Limit order
@@ -368,10 +397,10 @@ export function TradeTicket({
             <span>CR</span>
           </div>
           <p>
-            Market quotes include a hard 1% maximum slippage bound unless you
-            set a tighter cap. Limit orders are protected by their entered
-            price. Orders execute only within your limit and available balance.
-            Unfilled market shares are canceled.
+            Immediate orders protect average fill price within 1% of the quote,
+            subject to microcredit rounding, and require the quoted minimum
+            share count. Limit orders use your entered price. Tighter credit
+            caps still apply. Unfilled immediate shares are canceled.
           </p>
         </details>
         <div className="trade-estimate">
@@ -397,6 +426,12 @@ export function TradeTicket({
           </div>
         </div>
         <ErrorNote message={error} />
+        {!tradingEnabled && (
+          <div className="warning-note">
+            Exchange trading is paused for operational review. Committed orders
+            and balances remain available.
+          </div>
+        )}
         {uncertain && (
           <button
             className="inline-link"
@@ -434,7 +469,8 @@ export function TradeTicket({
               (!uncertain &&
                 (!market ||
                   !outcome ||
-                  (!!user && (!valid || stale || !book || !isOpen))))
+                  (!!user &&
+                    (!valid || stale || !book || !isOpen || !tradingEnabled))))
             }
           >
             {busy ? (
@@ -532,6 +568,30 @@ export function TradeTicket({
                       : "Your entered limit price"}
                 </dd>
               </div>
+              {mode === "IOC" && quoteProtection && (
+                <>
+                  <div>
+                    <dt>Minimum received shares</dt>
+                    <dd>{quoteProtection.minFillQuantity}</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      {side === "BUY"
+                        ? "Maximum average price"
+                        : "Minimum average price"}
+                    </dt>
+                    <dd>
+                      {cents(
+                        Number(
+                          side === "BUY"
+                            ? quoteProtection.maxAveragePrice
+                            : quoteProtection.minAveragePrice,
+                        ),
+                      )}
+                    </dd>
+                  </div>
+                </>
+              )}
               {side === "BUY" && (
                 <>
                   <div>
@@ -601,7 +661,8 @@ export function TradeTicket({
                 disabled={
                   busy ||
                   (!uncertain &&
-                    (quoteExpired ||
+                    (!tradingEnabled ||
+                      quoteExpired ||
                       stale ||
                       (mode === "IOC" && !quote.executable)))
                 }
@@ -620,6 +681,8 @@ export function TradeTicket({
               This transaction uses fictional credits in your{" "}
               {market?.exchange === "LIVE" ? "Live" : "selected Friends group"}{" "}
               wallet.
+              {market?.exchange === "LIVE" &&
+                " Simulation fees are zero; provider trading fees are not modeled."}
             </p>
           </div>
         </Modal>
