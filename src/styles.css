@@ -2771,3 +2771,22 @@ td:first-child {
   margin: -8px 0 20px;
   line-height: 1.6;
 }
+
+.simple-bet-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+.simple-bet-details[open] > summary {
+  margin-bottom: 14px;
+}
+.bet-result-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.bet-result {
+  font-weight: 600;
+}
