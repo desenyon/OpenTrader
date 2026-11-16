@@ -41,7 +41,7 @@ Open **[localhost:3000](http://localhost:3000)**. Your generated admin password 
 
 New members request an account and wait for approval. First approval creates independent **10,000-credit Live and Friends wallets** and a private group. Reactivation and repeat approval never issue another allocation.
 
-To trade with friends: invite them from **Friends → Manage group**, appoint an independent moderator and resolver, create a question with observable rules, and have the moderator approve it. The market maker provides initial liquidity even when no one has posted a limit order.
+To trade with friends: invite them from **Friends → Manage group**, enter a question and closing time, and tap **Create bet**. Betting opens immediately. The creator can trade and choose **Yes**, **No**, or **Cancel** when it is time to settle; group admins can help. No approval, official source, or written reason is required.
 
 <details>
 <summary><strong>Configuration and production commands</strong></summary>
@@ -100,13 +100,13 @@ Fresh captures of the running app with demo accounts and markets. Click an image
 
 ## Two exchanges. One place.
 
-|                | Live Markets                                                  | Friends Exchange                                     |
-| -------------- | ------------------------------------------------------------- | ---------------------------------------------------- |
-| **Questions**  | Public Polymarket/Kalshi markets                              | Original questions for approved group members        |
-| **Prices**     | External opening odds → credit-driven OpenTrader LMSR + peers | Fixed-liquidity LMSR + price-time peer orders        |
-| **Execution**  | Funded local fills; never sent externally                     | Owned shares, protected orders, and locked resources |
-| **Economy**    | One account-level Live wallet                                 | A separate wallet for each group                     |
-| **Resolution** | Verified provider-final result                                | Independent resolver, evidence, and dispute review   |
+|                | Live Markets                                                  | Friends Exchange                                      |
+| -------------- | ------------------------------------------------------------- | ----------------------------------------------------- |
+| **Questions**  | Public Polymarket/Kalshi markets                              | Original questions for approved group members         |
+| **Prices**     | External opening odds → credit-driven OpenTrader LMSR + peers | Fixed-liquidity LMSR + price-time peer orders         |
+| **Execution**  | Funded local fills; never sent externally                     | Owned shares, protected orders, and locked resources  |
+| **Economy**    | One account-level Live wallet                                 | A separate wallet for each group                      |
+| **Resolution** | Verified provider-final result                                | Creator or group admin decides; payouts are immediate |
 
 Funds and positions stay inside their own exchange and group. Market prices express what trading implies; they do not guarantee an outcome.
 
@@ -117,7 +117,7 @@ New binary Live markets freeze a validated provider bid/ask midpoint as their op
 - **Browse first.** Search, topics, source filters, watchlists, shareable questions, and source history.
 - **Trade with a limit.** Size-aware previews, exact spend caps, average-price bounds, partial fills, GTC/GTD orders, cancellation, and expiry.
 - **Know your position.** Cost basis, realized/unrealized P&L, indicative value, estimated liquidation value after slippage, and CSV journals.
-- **Settle with evidence.** Frozen rules, creator-independent approval, a nontrading resolver, a 24-hour challenge window, impartial review, and a disclosed neutral-void policy.
+- **Settle with a tap.** The creator or a group admin chooses Yes, No, or Cancel. Winning shares pay 1 CR; canceling pays 0.50 CR per share. Existing draft bets can be opened directly by their creator.
 - **Choose your trading identity.** Signup can hide your name in fills and rankings behind an alias per economy. Admins retain attribution; memberships, comments, and market roles stay named.
 - **Keep score honestly.** Group returns and forecast calibration are separate. Extra credit allocations do not count as trading performance.
 
@@ -164,7 +164,7 @@ npm run test:production
 npm run benchmark
 ```
 
-The latest local verification passed **152 tests across 20 files**, TypeScript/build, and the packaged production smoke. The smoke exercises anonymous signup, reason-free admin approval, separate wallets, reports, and reconciliation against a disposable database.
+The latest local verification passed **201 tests across 25 files**, TypeScript/build, and the packaged production smoke. The smoke exercises anonymous signup, reason-free admin approval, separate wallets, reports, and reconciliation against a disposable database.
 
 The [measured local benchmark](docs/verification/admin-economy.md#performance-sample) used **100 users and 1,000 open markets** with all submitted orders succeeding and every reconciliation flag passing. It excludes network/TLS, browser rendering, external feeds, and sustained load; it does not establish production capacity.
 
@@ -175,6 +175,8 @@ Friends works independently of provider feeds. **Hosted external-data mode defau
 See the provider references in [third-party notices](THIRD_PARTY_NOTICES.md) and the [implementation verification](docs/verification/README.md). Source corrections require separately appointed, historically nontrading reviewers and a finite correction reserve.
 
 ## Documentation
+
+- [Simple Friends bets and balance synchronization](docs/verification/simple-friends.md)
 
 - [Credit-driven Live economy and rules](docs/design/credit-driven-economy.md)
 - [November 16 tests and performance evidence](docs/verification/credit-economy.md)
