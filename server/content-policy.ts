@@ -3,8 +3,8 @@ export class ContentPolicyError extends Error {
   readonly code = "CONTENT_POLICY";
 }
 
-// Conservative first-line screening supplements mandatory independent moderator
-// approval and member reporting. It is not represented as comprehensive semantic
+// Conservative first-line screening supplements group controls and member
+// reporting. It is not represented as comprehensive semantic
 // moderation or a substitute for the subject's informed consent.
 const sensitive = [
   /\b(?:suicid\w*|self[\s-]?harm|overdos\w*|murder\w*|rape\w*|doxx?\w*)\b/i,
