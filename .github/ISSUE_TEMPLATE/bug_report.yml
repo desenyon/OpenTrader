@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible problem in OpenTrader.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Friends trading
+        - Live paper trading
+        - Accounts and admin
+        - Economy and settlement
+        - Privacy and permissions
+        - Interface and navigation
+        - Setup and deployment
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include what you expected instead. Report security vulnerabilities privately through SECURITY.md.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Use synthetic accounts and markets. Do not include credentials or private participant data.
+      placeholder: |
+        1. Sign in as…
+        2. Open…
+        3. Submit…
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and environment
+      placeholder: Commit, Node version, OS, browser, local or hosted
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots or redacted logs
+      description: Remove session/invite tokens, personal data, passwords and database contents.
