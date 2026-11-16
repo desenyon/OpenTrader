@@ -309,7 +309,9 @@ export function normalizeKalshiMarket(value: unknown): Market {
     outcomes: [
       {
         id: "yes",
-        label: str(raw.yes_sub_title) ? `Yes · ${str(raw.yes_sub_title)}` : "Yes",
+        label: str(raw.yes_sub_title)
+          ? `Yes · ${str(raw.yes_sub_title)}`
+          : "Yes",
         probability: yes,
       },
       {
@@ -646,7 +648,10 @@ export class MarketDataService {
           .includes(term),
     );
   }
-  async getMarket(id: string): Promise<Market> {
+  async getMarket(
+    id: string,
+    options: { fresh?: boolean } = {},
+  ): Promise<Market> {
     this.gate();
     const match = /^(poly|kalshi):([A-Za-z0-9_-]+)$/.exec(id);
     if (!match || (match[1] === "poly" && !/^\d+$/.test(match[2])))
@@ -657,6 +662,7 @@ export class MarketDataService {
       );
     const existing = this.markets.get(id);
     if (
+      !options.fresh &&
       existing &&
       this.now().getTime() - (this.marketTimes.get(id) ?? 0) < 15_000
     )
