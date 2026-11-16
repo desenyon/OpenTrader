@@ -1,0 +1,476 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-11-16T23:02:02.273Z",
+  "finishedAt": "2026-11-16T23:02:14.744Z",
+  "environment": {
+    "node": "v26.11.1",
+    "platform": "darwin",
+    "release": "27.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4",
+    "availableParallelism": 10,
+    "totalMemoryBytes": 17179869184,
+    "freeMemoryBytes": 182272000
+  },
+  "fixture": {
+    "users": 100,
+    "activeGroupMembers": 100,
+    "openFriendsMarkets": 1000,
+    "liquidityB": 10,
+    "targetTreasuryRemaining": "92068.528000",
+    "independentCreatorModeratorResolver": true,
+    "oneShareLots": true,
+    "buyLimitPrice": "0.7500",
+    "hardMaxTotalCost": "0.750000",
+    "minimumFillQuantity": 1,
+    "exchanges": [
+      "FRIENDS",
+      "LIVE"
+    ],
+    "liveCurveFixture": "Three synthetic 63% opening-prior markets, b=500; five quote previews and one buy/undo per size, direct Store calls without provider/network latency",
+    "sqlite": {
+      "diskBacked": true,
+      "journalMode": "WAL",
+      "synchronous": "FULL",
+      "databaseBytes": 10563584,
+      "walBytes": 6180032,
+      "serializedStateBytes": 2528509
+    }
+  },
+  "setup": {
+    "registrationMs": 2091.299,
+    "membershipMs": 69.938,
+    "creationAndApprovalMs": 6821.131,
+    "totalMs": 9378.14
+  },
+  "warmup": {
+    "name": "warmup-5",
+    "concurrency": 5,
+    "durationMs": 68.252,
+    "successes": 5,
+    "rejects": 0,
+    "successfulOrders": 5,
+    "successfulReads": 0,
+    "statusCounts": {
+      "200": 5
+    },
+    "rejectionCodes": {},
+    "httpLatency": {
+      "count": 5,
+      "minMs": 31.113,
+      "p50Ms": 47.651,
+      "p95Ms": 68.218,
+      "p99Ms": 68.218,
+      "maxMs": 68.218,
+      "meanMs": 49.352
+    },
+    "queueToOnRequest": {
+      "count": 5,
+      "minMs": 7.296,
+      "p50Ms": 7.296,
+      "p95Ms": 7.301,
+      "p99Ms": 7.301,
+      "maxMs": 7.301,
+      "meanMs": 7.297
+    },
+    "scheduledToPreHandler": {
+      "count": 5,
+      "minMs": 8.815,
+      "p50Ms": 39.596,
+      "p95Ms": 60.29,
+      "p99Ms": 60.29,
+      "maxMs": 60.29,
+      "meanMs": 37.544
+    },
+    "preHandlerToOnSend": {
+      "count": 5,
+      "minMs": 7.822,
+      "p50Ms": 8.066,
+      "p95Ms": 21.375,
+      "p99Ms": 21.375,
+      "maxMs": 21.375,
+      "meanMs": 11.527
+    }
+  },
+  "typical20": [
+    {
+      "name": "typical-20-round-1",
+      "concurrency": 20,
+      "durationMs": 183.358,
+      "successes": 20,
+      "rejects": 0,
+      "successfulOrders": 20,
+      "successfulReads": 0,
+      "statusCounts": {
+        "200": 20
+      },
+      "rejectionCodes": {},
+      "httpLatency": {
+        "count": 20,
+        "minMs": 8.38,
+        "p50Ms": 92.976,
+        "p95Ms": 171.652,
+        "p99Ms": 183.332,
+        "maxMs": 183.332,
+        "meanMs": 97.739
+      },
+      "queueToOnRequest": {
+        "count": 20,
+        "minMs": 0.674,
+        "p50Ms": 0.676,
+        "p95Ms": 0.677,
+        "p99Ms": 0.678,
+        "maxMs": 0.678,
+        "meanMs": 0.676
+      },
+      "scheduledToPreHandler": {
+        "count": 20,
+        "minMs": 1.134,
+        "p50Ms": 85.317,
+        "p95Ms": 164.528,
+        "p99Ms": 171.684,
+        "maxMs": 171.684,
+        "meanMs": 88.663
+      },
+      "preHandlerToOnSend": {
+        "count": 20,
+        "minMs": 6.806,
+        "p50Ms": 7.33,
+        "p95Ms": 12.462,
+        "p99Ms": 12.942,
+        "maxMs": 12.942,
+        "meanMs": 8.993
+      }
+    },
+    {
+      "name": "typical-20-round-2",
+      "concurrency": 20,
+      "durationMs": 192.17,
+      "successes": 20,
+      "rejects": 0,
+      "successfulOrders": 20,
+      "successfulReads": 0,
+      "statusCounts": {
+        "200": 20
+      },
+      "rejectionCodes": {},
+      "httpLatency": {
+        "count": 20,
+        "minMs": 7.981,
+        "p50Ms": 96.122,
+        "p95Ms": 180.385,
+        "p99Ms": 192.151,
+        "maxMs": 192.151,
+        "meanMs": 100.234
+      },
+      "queueToOnRequest": {
+        "count": 20,
+        "minMs": 0.407,
+        "p50Ms": 0.408,
+        "p95Ms": 0.409,
+        "p99Ms": 0.409,
+        "maxMs": 0.409,
+        "meanMs": 0.408
+      },
+      "scheduledToPreHandler": {
+        "count": 20,
+        "minMs": 0.705,
+        "p50Ms": 88.774,
+        "p95Ms": 172.669,
+        "p99Ms": 180.428,
+        "maxMs": 180.428,
+        "meanMs": 90.695
+      },
+      "preHandlerToOnSend": {
+        "count": 20,
+        "minMs": 6.849,
+        "p50Ms": 7.663,
+        "p95Ms": 13.898,
+        "p99Ms": 14.838,
+        "maxMs": 14.838,
+        "meanMs": 9.461
+      }
+    },
+    {
+      "name": "typical-20-round-3",
+      "concurrency": 20,
+      "durationMs": 197.044,
+      "successes": 20,
+      "rejects": 0,
+      "successfulOrders": 20,
+      "successfulReads": 0,
+      "statusCounts": {
+        "200": 20
+      },
+      "rejectionCodes": {},
+      "httpLatency": {
+        "count": 20,
+        "minMs": 8.368,
+        "p50Ms": 96.256,
+        "p95Ms": 183.293,
+        "p99Ms": 197.013,
+        "maxMs": 197.013,
+        "meanMs": 100.734
+      },
+      "queueToOnRequest": {
+        "count": 20,
+        "minMs": 0.517,
+        "p50Ms": 0.518,
+        "p95Ms": 0.523,
+        "p99Ms": 0.523,
+        "maxMs": 0.523,
+        "meanMs": 0.519
+      },
+      "scheduledToPreHandler": {
+        "count": 20,
+        "minMs": 0.844,
+        "p50Ms": 84.058,
+        "p95Ms": 175.491,
+        "p99Ms": 183.33,
+        "maxMs": 183.33,
+        "meanMs": 90.952
+      },
+      "preHandlerToOnSend": {
+        "count": 20,
+        "minMs": 6.969,
+        "p50Ms": 8.389,
+        "p95Ms": 12.238,
+        "p99Ms": 13.584,
+        "maxMs": 13.584,
+        "meanMs": 9.713
+      }
+    },
+    {
+      "name": "typical-20-round-4",
+      "concurrency": 20,
+      "durationMs": 208.527,
+      "successes": 20,
+      "rejects": 0,
+      "successfulOrders": 20,
+      "successfulReads": 0,
+      "statusCounts": {
+        "200": 20
+      },
+      "rejectionCodes": {},
+      "httpLatency": {
+        "count": 20,
+        "minMs": 8.955,
+        "p50Ms": 100.534,
+        "p95Ms": 196.044,
+        "p99Ms": 208.502,
+        "maxMs": 208.502,
+        "meanMs": 106.84
+      },
+      "queueToOnRequest": {
+        "count": 20,
+        "minMs": 0.359,
+        "p50Ms": 0.36,
+        "p95Ms": 0.36,
+        "p99Ms": 0.36,
+        "maxMs": 0.36,
+        "meanMs": 0.36
+      },
+      "scheduledToPreHandler": {
+        "count": 20,
+        "minMs": 0.655,
+        "p50Ms": 86.501,
+        "p95Ms": 187.907,
+        "p99Ms": 196.075,
+        "maxMs": 196.075,
+        "meanMs": 96.484
+      },
+      "preHandlerToOnSend": {
+        "count": 20,
+        "minMs": 7.378,
+        "p50Ms": 9.375,
+        "p95Ms": 13.707,
+        "p99Ms": 13.874,
+        "maxMs": 13.874,
+        "meanMs": 10.264
+      }
+    },
+    {
+      "name": "typical-20-round-5",
+      "concurrency": 20,
+      "durationMs": 202.665,
+      "successes": 20,
+      "rejects": 0,
+      "successfulOrders": 20,
+      "successfulReads": 0,
+      "statusCounts": {
+        "200": 20
+      },
+      "rejectionCodes": {},
+      "httpLatency": {
+        "count": 20,
+        "minMs": 9.33,
+        "p50Ms": 106.101,
+        "p95Ms": 190.436,
+        "p99Ms": 202.646,
+        "maxMs": 202.646,
+        "meanMs": 107.737
+      },
+      "queueToOnRequest": {
+        "count": 20,
+        "minMs": 0.355,
+        "p50Ms": 0.369,
+        "p95Ms": 0.37,
+        "p99Ms": 0.37,
+        "maxMs": 0.37,
+        "meanMs": 0.369
+      },
+      "scheduledToPreHandler": {
+        "count": 20,
+        "minMs": 0.683,
+        "p50Ms": 91.745,
+        "p95Ms": 183.238,
+        "p99Ms": 190.461,
+        "maxMs": 190.461,
+        "meanMs": 97.667
+      },
+      "preHandlerToOnSend": {
+        "count": 20,
+        "minMs": 7.145,
+        "p50Ms": 8.542,
+        "p95Ms": 12.887,
+        "p99Ms": 14.28,
+        "maxMs": 14.28,
+        "meanMs": 10
+      }
+    }
+  ],
+  "hundredUsers": {
+    "name": "100-active-user-burst",
+    "concurrency": 100,
+    "durationMs": 1009.109,
+    "successes": 100,
+    "rejects": 0,
+    "successfulOrders": 99,
+    "successfulReads": 1,
+    "statusCounts": {
+      "200": 100
+    },
+    "rejectionCodes": {},
+    "httpLatency": {
+      "count": 100,
+      "minMs": 2.138,
+      "p50Ms": 488.25,
+      "p95Ms": 957.434,
+      "p99Ms": 1001.213,
+      "maxMs": 1009.067,
+      "meanMs": 497.352
+    },
+    "queueToOnRequest": {
+      "count": 100,
+      "minMs": 1.314,
+      "p50Ms": 1.325,
+      "p95Ms": 1.329,
+      "p99Ms": 1.33,
+      "maxMs": 1.33,
+      "meanMs": 1.325
+    },
+    "scheduledToPreHandler": {
+      "count": 100,
+      "minMs": 1.961,
+      "p50Ms": 480.636,
+      "p95Ms": 943.835,
+      "p99Ms": 988.149,
+      "maxMs": 1001.244,
+      "meanMs": 487.314
+    },
+    "preHandlerToOnSend": {
+      "count": 100,
+      "minMs": 0.078,
+      "p50Ms": 8.769,
+      "p95Ms": 13.049,
+      "p99Ms": 13.508,
+      "maxMs": 13.738,
+      "meanMs": 9.981
+    }
+  },
+  "liveCurve": [
+    {
+      "quantity": 10,
+      "quoteLatency": {
+        "count": 5,
+        "minMs": 12.112,
+        "p50Ms": 13.955,
+        "p95Ms": 18.246,
+        "p99Ms": 18.246,
+        "maxMs": 18.246,
+        "meanMs": 14.688
+      },
+      "buyMs": 24.155,
+      "sellMs": 13.203
+    },
+    {
+      "quantity": 100,
+      "quoteLatency": {
+        "count": 5,
+        "minMs": 23.005,
+        "p50Ms": 27.04,
+        "p95Ms": 28.37,
+        "p99Ms": 28.37,
+        "maxMs": 28.37,
+        "meanMs": 25.938
+      },
+      "buyMs": 38.358,
+      "sellMs": 21.954
+    },
+    {
+      "quantity": 1000,
+      "quoteLatency": {
+        "count": 5,
+        "minMs": 35.876,
+        "p50Ms": 40.839,
+        "p95Ms": 46.951,
+        "p99Ms": 46.951,
+        "maxMs": 46.951,
+        "meanMs": 40.354
+      },
+      "buyMs": 69.977,
+      "sellMs": 23.48
+    }
+  ],
+  "reconciliation": {
+    "balanced": true,
+    "inventoryMatches": true,
+    "riskReservesMatch": true,
+    "escrowsSolvent": true,
+    "locksMatch": true,
+    "journalBalanced": true,
+    "projectionsMatch": true,
+    "nonnegative": true,
+    "checkedAt": "2026-11-16T23:02:14.737Z",
+    "ownEntries": 22,
+    "durationMs": 414.568
+  },
+  "totalDurationMs": 12470.933,
+  "sourceSha256AtStart": {
+    "server/store.ts": "92f69540a678d28f2ebe70c8b938ef4d17755c0e0dc75df85d505ca449257160",
+    "server/math.ts": "9c0be70f9428eb2be45b12b7fec94a2635f112ed6f22b21412457a515415dd37",
+    "server/live-economy.ts": "4977ad7d499c0017b525b066bc6c7b58c9c12c4b0d4e8dd595643b4aa43e14d5",
+    "server/app.ts": "3fdb8b3ea3bbce800ffb09eb366f880aba341d351f44fd90cc488d8137fe44cc",
+    "server/routes.ts": "f8d6de452ef58d5136e36c2d7a2a26aa984fd28de8856aa0fd3449ab0bbcbc8f",
+    "scripts/benchmark.ts": "ea23d27eec59598e8a209025090170441ca91bf03b4ae6d1daf1ba8367cc459c"
+  },
+  "sourceSha256AtEnd": {
+    "server/store.ts": "92f69540a678d28f2ebe70c8b938ef4d17755c0e0dc75df85d505ca449257160",
+    "server/math.ts": "9c0be70f9428eb2be45b12b7fec94a2635f112ed6f22b21412457a515415dd37",
+    "server/live-economy.ts": "4977ad7d499c0017b525b066bc6c7b58c9c12c4b0d4e8dd595643b4aa43e14d5",
+    "server/app.ts": "3fdb8b3ea3bbce800ffb09eb366f880aba341d351f44fd90cc488d8137fe44cc",
+    "server/routes.ts": "f8d6de452ef58d5136e36c2d7a2a26aa984fd28de8856aa0fd3449ab0bbcbc8f",
+    "scripts/benchmark.ts": "ea23d27eec59598e8a209025090170441ca91bf03b4ae6d1daf1ba8367cc459c"
+  },
+  "sourceChangedDuringRun": [],
+  "limitations": [
+    "Live curve measurements use direct Store calls with synthetic source snapshots and include SQLite projection writes; they exclude provider/network latency and are separate from Friends HTTP bursts.",
+    "Local in-process Fastify inject; no TCP, TLS, browser rendering, external provider latency, or network queueing.",
+    "Concurrency means simultaneously submitted request intents on one Node process; SQLite and exchange math execute synchronously on the event loop.",
+    "Queue-to-onRequest includes injection dispatch and earlier request hooks; scheduled-to-preHandler also includes auth, rate-limit, parsing, and event-loop delay.",
+    "Five 20-request bursts and one 100-user burst are finite samples, not a sustained throughput or production capacity claim.",
+    "All measured orders use different funded markets and fresh idempotency keys; market contention, provider quotes, and large-lot matching are outside this run.",
+    "Registration scrypt and 1,000 independently committed creations/approvals are setup; neither is included in request latency.",
+    "Protected order-submission phase only: hard price/cash limits and minimum fill are supplied; quote-preview HTTP latency is not included."
+  ]
+}
