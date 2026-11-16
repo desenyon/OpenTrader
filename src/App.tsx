@@ -992,6 +992,28 @@ export default function App() {
                       : outcome?.label}
                   </span>
                 </div>
+                {market.executionModel === "SOURCE_SEEDED_LMSR" && (
+                  <p className="source-reference">
+                    {market.pricing?.active
+                      ? "OpenTrader price · "
+                      : "Opening estimate · "}
+                    {market.provider === "kalshi" ? "Kalshi" : "Polymarket"}{" "}
+                    reference{" "}
+                    {chance(
+                      (market.reference?.outcomes ?? market.outcomes).find(
+                        (o) => o.id === outcome?.id,
+                      )?.probability ?? 0,
+                    )}
+                    <span>
+                      {" "}
+                      ·{" "}
+                      {new Date(
+                        market.reference?.timestamp ?? market.updatedAt,
+                      ).toLocaleTimeString()}{" "}
+                      · play credits
+                    </span>
+                  </p>
+                )}
                 <div className="detail-outcomes" aria-label="Chart outcome">
                   {market.outcomes.map((item) => (
                     <button
@@ -1195,9 +1217,9 @@ export default function App() {
             <section>
               <h3>Two modes, separate balances</h3>
               <p>
-                Live simulates trades against real Polymarket and Kalshi data.
-                Friends has private questions and its own prices. Credits never
-                move between them.
+                Live opens markets using Polymarket and Kalshi odds, then our
+                credit trades move OpenTrader prices. Friends has private group
+                questions and its own economy. Credits stay in their own wallet.
               </p>
             </section>
             <p className="form-footnote">
