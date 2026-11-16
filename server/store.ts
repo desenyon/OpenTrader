@@ -1,3 +1,13 @@
+import {
+  LIVE_LIQUIDITY_ACCOUNT,
+  LIVE_INITIAL_SUBSIDY,
+  LIVE_LIQUIDITY_B,
+  LIVE_ACTIVATION_LIMIT,
+  seedLiveCurve,
+  curveReserve,
+  sourceRulesHash,
+  type LiveCurve,
+} from "./live-economy.js";
 import type {
   AdminAction,
   AdminReport,
@@ -100,6 +110,7 @@ type StoredOrder = Order & {
 };
 type StoredMarket = Market & {
   q: number[];
+  curve?: LiveCurve;
   reserve: string;
   approvedBy?: string;
   determinedAt?: string;
@@ -157,6 +168,7 @@ type State = {
       quote: Quote;
       input: Partial<OrderInput>;
       bookHash?: string;
+      curve?: LiveCurve;
     }
   >;
   comments: Comment[];
@@ -167,6 +179,7 @@ type State = {
   corrections: Record<string, Correction>;
   liveBooks: Record<string, OrderBook>;
   operatorPaused: boolean;
+  orderSequences: Record<string, number>;
 };
 const empty = (): State => ({
   users: {},
@@ -190,19 +203,26 @@ const empty = (): State => ({
   corrections: {},
   liveBooks: {},
   operatorPaused: false,
+  orderSequences: {},
 });
 export class Store {
   readonly db: DatabaseSync;
   private state: State;
   private inTx = false;
   private txid = "";
+  private commandTime: number | null = null;
   private dataVersion = -1;
   private matchingWork = 0;
   readonly clock: () => Date;
-  constructor(options: { path?: string; now?: () => Date } = {}) {
+  readonly liveCommunity: boolean;
+  constructor(
+    options: { path?: string; now?: () => Date; liveCommunity?: boolean } = {},
+  ) {
+    this.liveCommunity = options.liveCommunity ?? false;
     const path = options.path ?? "data/opentrader.sqlite";
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-    this.clock = options.now ?? (() => new Date());
+    const wallClock = options.now ?? (() => new Date());
+    this.clock = () => new Date(this.commandTime ?? wallClock().getTime());
     this.db = new DatabaseSync(path);
     this.db
       .exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
@@ -224,6 +244,18 @@ export class Store {
       .run(JSON.stringify(empty()));
     this.state = empty();
     this.refresh();
+    if (this.liveCommunity)
+      this.transaction(() => {
+        if (this.state.accounts[LIVE_LIQUIDITY_ACCOUNT] === undefined)
+          this.transfer(
+            "issuer:live-liquidity:v2",
+            LIVE_LIQUIDITY_ACCOUNT,
+            LIVE_INITIAL_SUBSIDY,
+            "cash",
+            "FINITE_LIVE_LIQUIDITY_BUDGET",
+            "live-1:v2",
+          );
+      });
   }
   close() {
     this.db.close();
@@ -259,6 +291,7 @@ export class Store {
     }
     this.db.exec("BEGIN IMMEDIATE");
     this.refresh();
+    this.commandTime = this.clock().getTime();
     this.inTx = true;
     this.txid = id();
     this.matchingWork = 0;
@@ -273,7 +306,8 @@ export class Store {
       for (const market of Object.values(this.state.markets)) {
         const before = previous.get(market.id);
         if (before === undefined || before !== market.sequence) {
-          market.sequence = before === undefined ? 0 : before + 1;
+          market.sequence =
+            before === undefined ? Math.max(0, market.sequence) : before + 1;
           changed.add(market.id);
           this.db
             .prepare(
@@ -306,10 +340,12 @@ export class Store {
         .run(JSON.stringify(this.state));
       this.db.exec("COMMIT");
       this.inTx = false;
+      this.commandTime = null;
       return response;
     } catch (error) {
       this.db.exec("ROLLBACK");
       this.inTx = false;
+      this.commandTime = null;
       this.refresh(true);
       throw error;
     }
@@ -842,6 +878,74 @@ export class Store {
     else this.user(userId);
     return m;
   }
+  private communityMarket(m: Market): boolean {
+    const stored = this.state.markets[m.id];
+    return (
+      !!stored?.curve ||
+      (this.liveCommunity &&
+        m.exchange === "LIVE" &&
+        m.outcomes.length === 2 &&
+        !this.state.fills.some((f) => f.marketId === m.id))
+    );
+  }
+  projectLiveMarket(source: Market): Market {
+    this.refresh();
+    const stored = this.state.markets[source.id];
+    if (stored?.curve || stored?.resolution?.state === "FINAL")
+      return this.syncLiveMarket(source);
+    return {
+      ...structuredClone(source),
+      executionModel: this.communityMarket(source)
+        ? "SOURCE_SEEDED_LMSR"
+        : "EXTERNAL_SIM",
+      engineVersion: this.communityMarket(source) ? 2 : 1,
+    };
+  }
+  private candidateCurve(
+    m: StoredMarket,
+    book: OrderBook,
+    userId: string,
+  ): StoredMarket {
+    if (m.curve) return m;
+    let curve: LiveCurve;
+    try {
+      curve = seedLiveCurve(m, book, userId, this.now());
+    } catch (error) {
+      fail(422, "SEED_UNAVAILABLE", (error as Error).message);
+    }
+    const required = curveReserve(curve);
+    if (this.balance(LIVE_LIQUIDITY_ACCOUNT) < required)
+      fail(
+        409,
+        "LIVE_LIQUIDITY_EXHAUSTED",
+        "Live liquidity budget is fully reserved; an administrator can allocate additional sponsor credits",
+      );
+    const active = Object.values(this.state.markets).filter(
+      (x) =>
+        x.curve?.openedBy === userId &&
+        !["RESOLVED", "VOID"].includes(x.status),
+    );
+    if (active.length >= LIVE_ACTIVATION_LIMIT)
+      fail(
+        409,
+        "LIVE_ACTIVATION_LIMIT",
+        "An account may open at most five unsettled Live markets; existing markets remain available",
+      );
+    return {
+      ...m,
+      curve,
+      b: LIVE_LIQUIDITY_B,
+      q: [0, 0],
+      reserve: required.toString(),
+      volume: 0,
+      reference: {
+        outcomes: structuredClone(m.outcomes),
+        timestamp: m.updatedAt,
+        status: m.status,
+        volume: m.volume,
+      },
+    };
+  }
   private marketView(m: StoredMarket): Market {
     const {
       q,
@@ -850,10 +954,30 @@ export class Store {
       determinedAt,
       calibrationReason,
       settledHoldings,
+      curve,
       ...v
     } = m;
     return structuredClone({
       ...v,
+      ...(m.exchange === "LIVE"
+        ? {
+            executionModel: this.communityMarket(m)
+              ? ("SOURCE_SEEDED_LMSR" as const)
+              : ("EXTERNAL_SIM" as const),
+            engineVersion: m.curve ? 2 : this.communityMarket(m) ? 2 : 1,
+            ...(curve
+              ? {
+                  pricing: {
+                    active: true,
+                    prior: curve.prior.map((p) => p / 1_000_000),
+                    anchorAt: curve.anchorAt,
+                    openedAt: curve.openedAt,
+                    maximumSubsidy: money(curveReserve(curve)),
+                  },
+                }
+              : {}),
+          }
+        : {}),
       outcomes: v.outcomes.map((o, i) => ({
         ...o,
         probability:
@@ -864,8 +988,8 @@ export class Store {
               : m.resolution.outcomeId === o.id
                 ? 1
                 : 0
-            : m.exchange === "FRIENDS"
-              ? probability(q, m.b!, i)
+            : m.exchange === "FRIENDS" || !!m.curve
+              ? probability(q, m.b!, i, m.curve?.prior)
               : o.probability,
       })),
     });
@@ -998,7 +1122,10 @@ export class Store {
       validateMarketContent(m);
       if (userId === m.creatorId)
         fail(403, "SELF_APPROVAL", "Creator cannot approve their market");
-      if (m.status !== "DRAFT" || m.closeAt <= this.now())
+      if (
+        m.status !== "DRAFT" ||
+        Date.parse(m.closeAt) <= this.clock().getTime()
+      )
         fail(409, "INVALID_STATE", "Only a future draft can be approved");
       this.membership(m.resolverId!, m.groupId!);
       const funding = reserve(m.b!);
@@ -1090,6 +1217,12 @@ export class Store {
     }
   }
   private assertTrading(userId: string, m: StoredMarket, outcomeId: string) {
+    if (m.curve) {
+      const source = this.state.liveBooks[m.id + ":" + outcomeId];
+      if (!source)
+        fail(409, "STALE_BOOK", "Fresh source confirmation is required");
+      this.validateBook(m, source, outcomeId);
+    }
     this.user(userId);
     if (this.state.operatorPaused)
       fail(
@@ -1099,7 +1232,8 @@ export class Store {
       );
     if (
       m.status !== "OPEN" ||
-      (m.exchange === "FRIENDS" && m.closeAt <= this.now())
+      ((m.exchange === "FRIENDS" || !!m.curve) &&
+        Date.parse(m.closeAt) <= this.clock().getTime())
     )
       fail(409, "MARKET_CLOSED", "Market is not open");
     if (!m.outcomes.some((x) => x.id === outcomeId))
@@ -1186,6 +1320,28 @@ export class Store {
       );
     return price;
   }
+  private orderPriority(order: StoredOrder) {
+    return (
+      order.createdSequence ??
+      Object.values(this.state.orders).findIndex(
+        (previous) => previous.id === order.id,
+      ) + 1
+    );
+  }
+  private nextOrderPriority(marketId: string) {
+    let sequence = this.state.orderSequences[marketId];
+    if (sequence === undefined) {
+      sequence = 0;
+      for (const previous of Object.values(this.state.orders).filter(
+        (o) => o.marketId === marketId,
+      )) {
+        previous.createdSequence ??= sequence + 1;
+        sequence = Math.max(sequence, previous.createdSequence);
+      }
+    }
+    this.state.orderSequences[marketId] = sequence + 1;
+    return sequence + 1;
+  }
   private activePeers(
     m: StoredMarket,
     outcomeId: string,
@@ -1207,8 +1363,7 @@ export class Store {
           (side === "BUY"
             ? a.limitPrice - b.limitPrice
             : b.limitPrice - a.limitPrice) ||
-          a.createdAt.localeCompare(b.createdAt) ||
-          a.id.localeCompare(b.id),
+          this.orderPriority(a) - this.orderPriority(b),
       );
   }
   private newOrder(
@@ -1218,6 +1373,7 @@ export class Store {
   ): StoredOrder {
     return {
       id: id(),
+      createdSequence: this.nextOrderPriority(m.id),
       userId,
       exchange: m.exchange,
       groupId: m.groupId,
@@ -1380,6 +1536,18 @@ export class Store {
   private lockOrder(o: StoredOrder, m: StoredMarket) {
     const left = o.quantity - o.filledQuantity;
     if (!left) return;
+    const resting = Object.values(this.state.orders).filter(
+      (other) =>
+        other.marketId === m.id && other.status === "OPEN" && other.id !== o.id,
+    );
+    if (resting.length >= 100)
+      fail(422, "ORDER_LIMIT", "Market supports at most 100 resting orders");
+    if (resting.filter((other) => other.userId === o.userId).length >= 20)
+      fail(
+        422,
+        "USER_ORDER_LIMIT",
+        "Each account supports at most 20 resting orders per market",
+      );
     const w = this.walletRecord(o.userId, m.exchange, m.groupId);
     if (o.side === "BUY") {
       const amount = units(o.limitPrice) * BigInt(left);
@@ -1538,56 +1706,113 @@ export class Store {
     }[] = [];
     let total = 0n,
       filled = 0;
-    for (let n = 0; n < Math.min(input.quantity, available); n++) {
-      if (this.inTx && ++this.matchingWork > 10000)
-        fail(
-          422,
-          "COMPLEXITY_LIMIT",
-          "Matching exceeds 10,000-lot atomic work limit",
-        );
-      const peer = peers.find((p) => p.remaining > 0),
-        amm =
-          input.side === "SELL" && q[index] === 0
-            ? undefined
-            : ammCost(q, m.b!, index, 1, input.side),
-        pc = peer ? units(peer.limitPrice) : undefined,
-        usePeer =
-          pc !== undefined &&
-          (amm === undefined || (input.side === "BUY" ? pc <= amm : pc >= amm)),
-        price = usePeer ? pc : amm;
+    const maximum = Math.min(input.quantity, available);
+    while (filled < maximum) {
+      const peer = peers.find((p) => p.remaining > 0);
+      const amm =
+        input.side === "SELL" && q[index] === 0
+          ? undefined
+          : ammCost(q, m.b!, index, 1, input.side, m.curve?.prior);
+      const pc = peer ? units(peer.limitPrice) : undefined;
+      const usePeer =
+        pc !== undefined &&
+        (amm === undefined || (input.side === "BUY" ? pc <= amm : pc >= amm));
+      const price = usePeer ? pc : amm;
       if (
         price === undefined ||
         (input.side === "BUY" ? price > limit : price < limit)
       )
         break;
-      const source = usePeer ? "PEER" : "AMM",
-        prev = segments.at(-1),
-        same =
-          prev &&
-          prev.source === source &&
-          prev.peerId === (usePeer ? peer!.id : undefined),
-        newCash = same
-          ? usePeer
-            ? prev.cash + price
-            : ammCost(prev.startQ, m.b!, index, prev.quantity + 1, input.side)
-          : price,
-        delta = same ? newCash - prev.cash : price;
-      if (input.side === "BUY" && total + delta > funds) break;
-      total += delta;
-      filled++;
+      const source = usePeer ? ("PEER" as const) : ("AMM" as const);
+      const prev = segments.at(-1);
+      const same =
+        !!prev &&
+        prev.source === source &&
+        prev.peerId === (usePeer ? peer!.id : undefined);
+      const costCache = new Map<number, bigint>(
+        !usePeer && !same ? [[1, price]] : [],
+      );
+      const cashFor = (quantity: number): bigint => {
+        const cached = costCache.get(quantity);
+        if (cached !== undefined) return cached;
+        const cash = usePeer
+          ? price * BigInt(quantity)
+          : same
+            ? ammCost(
+                prev!.startQ,
+                m.b!,
+                index,
+                prev!.quantity + quantity,
+                input.side,
+                m.curve?.prior,
+              ) - prev!.cash
+            : ammCost(q, m.b!, index, quantity, input.side, m.curve?.prior);
+        costCache.set(quantity, cash);
+        return cash;
+      };
+      let size = Math.min(
+        maximum - filled,
+        usePeer ? peer!.remaining : input.side === "SELL" ? q[index]! : maximum,
+      );
+      if (usePeer) {
+        if (input.side === "BUY")
+          size = Math.min(size, Number((funds - total) / price));
+      } else if (size === 1) {
+        if (input.side === "BUY" && total + cashFor(1) > funds) size = 0;
+      } else {
+        // Per-lot integrated prices are monotone. Find the last executable whole
+        // lot before the next peer price, caller limit, or available cash boundary.
+        // Charge the full integrated curve once, preserving directional rounding.
+        let low = 0,
+          high = size;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2),
+            beforeLast = [...q];
+          beforeLast[index]! += (input.side === "BUY" ? 1 : -1) * (middle - 1);
+          const last = ammCost(
+            beforeLast,
+            m.b!,
+            index,
+            1,
+            input.side,
+            m.curve?.prior,
+          );
+          const withinPrice =
+            input.side === "BUY"
+              ? last <= limit && (pc === undefined || last < pc)
+              : last >= limit && (pc === undefined || last > pc);
+          if (
+            withinPrice &&
+            (input.side !== "BUY" || total + cashFor(middle) <= funds)
+          )
+            low = middle;
+          else high = middle - 1;
+        }
+        size = low;
+      }
+      if (size < 1) break;
+      if (this.inTx && (this.matchingWork += size) > 10000)
+        fail(
+          422,
+          "COMPLEXITY_LIMIT",
+          "Matching exceeds 10,000-lot atomic work limit",
+        );
+      const cash = cashFor(size);
+      total += cash;
+      filled += size;
       if (same) {
-        prev.quantity++;
-        prev.cash = newCash;
+        prev!.quantity += size;
+        prev!.cash += cash;
       } else
         segments.push({
           source,
-          quantity: 1,
-          cash: price,
+          quantity: size,
+          cash,
           peerId: usePeer ? peer!.id : undefined,
           startQ: [...q],
         });
-      if (usePeer) peer!.remaining--;
-      else q[index]! += input.side === "BUY" ? 1 : -1;
+      if (usePeer) peer!.remaining -= size;
+      else q[index]! += (input.side === "BUY" ? 1 : -1) * size;
     }
     return { segments, q, total, filled };
   }
@@ -1615,10 +1840,7 @@ export class Store {
       changed = false;
       const open = Object.values(this.state.orders)
         .filter((o) => o.marketId === m.id && o.status === "OPEN")
-        .sort(
-          (a, b) =>
-            a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
-        );
+        .sort((a, b) => this.orderPriority(a) - this.orderPriority(b));
       for (const o of open) {
         if (o.status !== "OPEN") continue;
         if (++work > 2000)
@@ -1659,6 +1881,12 @@ export class Store {
     return this.transaction(() => {
       this.validateInput(input);
       const m = this.marketRecord(userId, input.marketId);
+      if (m.exchange === "LIVE" && !m.curve)
+        fail(
+          422,
+          "INVALID_EXECUTION_MODEL",
+          "Legacy source simulation requires its own execution path",
+        );
       const idemKey = `${userId}:${m.exchange}:${m.groupId ?? "global"}:${key}`;
       if (typeof key !== "string" || key.length < 4 || key.length > 200)
         fail(
@@ -1680,12 +1908,6 @@ export class Store {
       this.expireAndClose();
       this.assertTrading(userId, m, input.outcomeId);
       this.validateQuote(userId, m, input);
-      if (
-        Object.values(this.state.orders).filter(
-          (o) => o.marketId === m.id && o.status === "OPEN",
-        ).length >= 100
-      )
-        fail(422, "ORDER_LIMIT", "Market supports at most 100 resting orders");
       if (
         input.side === "SELL" &&
         this.balance(this.shareAccount(userId, m.id, input.outcomeId)) <
@@ -1742,6 +1964,19 @@ export class Store {
     });
   }
   private validateQuote(userId: string, m: StoredMarket, input: OrderInput) {
+    const version = m.curve ? 2 : 1;
+    if (input.engineVersion !== undefined && input.engineVersion !== version)
+      fail(
+        409,
+        "ENGINE_VERSION",
+        "Execution model changed; request a new quote",
+      );
+    if (m.curve && input.engineVersion !== 2 && !input.quoteId)
+      fail(
+        409,
+        "ENGINE_VERSION",
+        "Accept execution model version 2 or request a fresh quote",
+      );
     if (
       input.expectedSequence !== undefined &&
       input.expectedSequence !== m.sequence
@@ -1758,6 +1993,7 @@ export class Store {
         q.quote.outcomeId !== input.outcomeId ||
         q.quote.side !== input.side ||
         q.quote.quantity !== input.quantity ||
+        (q.quote.engineVersion ?? 1) !== version ||
         q.quote.expiresAt <= this.now()
       )
         fail(409, "QUOTE_EXPIRED", "Quote expired or does not match order");
@@ -1777,64 +2013,102 @@ export class Store {
       this.expireAndClose();
       const m = this.marketRecord(userId, marketId);
       this.assertTrading(userId, m, input.outcomeId);
-      const full: OrderInput = {
-        ...input,
-        marketId,
-        limitPrice: String(
-          input.limitPrice ?? (input.side === "BUY" ? "0.9999" : "0.0001"),
-        ),
-        timeInForce: "IOC",
-      };
-      this.validateInput(full);
-      const plan = this.plan(userId, m, full),
-        index = m.outcomes.findIndex((x) => x.id === input.outcomeId),
-        sources: Quote["sources"] = [];
-      for (const segment of plan.segments) {
-        const existing = sources.find((x) => x.source === segment.source);
-        if (existing) {
-          existing.quantity += segment.quantity;
-          existing.cash = money(units(existing.cash) + segment.cash);
-        } else
-          sources.push({
-            source: segment.source,
-            quantity: segment.quantity,
-            cash: money(segment.cash),
-          });
-      }
-      const owns =
-        input.side !== "SELL" ||
-        this.balance(this.shareAccount(userId, marketId, input.outcomeId)) >=
-          BigInt(input.quantity);
-      const quote: Quote = {
-        id: id(),
-        marketId,
-        outcomeId: input.outcomeId,
-        side: input.side,
-        quantity: input.quantity,
-        filledQuantity: plan.filled,
-        estimatedCash: money(plan.total),
-        averagePrice: plan.filled ? Number(money(plan.total)) / plan.filled : 0,
-        afterProbability: probability(plan.q, m.b!, index),
-        expiresAt: new Date(this.clock().getTime() + 15000).toISOString(),
-        sequence: m.sequence,
-        executable: plan.filled > 0 && owns,
-        reason: !owns
-          ? "Not enough unlocked shares to sell the requested quantity"
-          : plan.filled
-            ? undefined
-            : "No executable liquidity within limits or insufficient available holdings",
-        sources,
-      };
-      this.state.quotes[quote.id] = { userId, quote, input: full };
-      return quote;
+      if (m.exchange === "LIVE" && !m.curve)
+        fail(
+          422,
+          "INVALID_EXECUTION_MODEL",
+          "Request a source-confirmed Live quote",
+        );
+      return this.quoteCurve(userId, m, input);
     });
   }
+  private quoteCurve(
+    userId: string,
+    m: StoredMarket,
+    input: {
+      outcomeId: string;
+      side: "BUY" | "SELL";
+      quantity: number;
+      limitPrice?: string | number;
+    },
+  ): Quote {
+    const full: OrderInput = {
+      ...input,
+      marketId: m.id,
+      limitPrice: String(
+        input.limitPrice ?? (input.side === "BUY" ? "0.9999" : "0.0001"),
+      ),
+      timeInForce: "IOC",
+    };
+    this.validateInput(full);
+    const plan = this.plan(userId, m, full),
+      index = m.outcomes.findIndex((x) => x.id === input.outcomeId),
+      sources: Quote["sources"] = [];
+    for (const segment of plan.segments) {
+      const existing = sources.find((x) => x.source === segment.source);
+      if (existing) {
+        existing.quantity += segment.quantity;
+        existing.cash = money(units(existing.cash) + segment.cash);
+      } else
+        sources.push({
+          source: segment.source,
+          quantity: segment.quantity,
+          cash: money(segment.cash),
+        });
+    }
+    const owns =
+      input.side !== "SELL" ||
+      this.balance(this.shareAccount(userId, m.id, input.outcomeId)) >=
+        BigInt(input.quantity);
+    const quote: Quote = {
+      id: id(),
+      engineVersion: m.curve ? 2 : 1,
+      ...(m.curve ? { executionModel: "SOURCE_SEEDED_LMSR" as const } : {}),
+      marketId: m.id,
+      outcomeId: input.outcomeId,
+      side: input.side,
+      quantity: input.quantity,
+      filledQuantity: plan.filled,
+      estimatedCash: money(plan.total),
+      averagePrice: plan.filled ? Number(money(plan.total)) / plan.filled : 0,
+      afterProbability: probability(plan.q, m.b!, index, m.curve?.prior),
+      ...(m.curve && !this.state.markets[m.id]?.curve
+        ? { openingProbability: m.curve.prior[index]! / 1_000_000 }
+        : {}),
+      expiresAt: new Date(
+        m.curve
+          ? Date.parse(
+              this.state.liveBooks[m.id + ":" + input.outcomeId]!.timestamp,
+            ) + 5000
+          : this.clock().getTime() + 15000,
+      ).toISOString(),
+      sequence: m.sequence,
+      executable: plan.filled > 0 && owns,
+      reason: !owns
+        ? "Not enough unlocked shares to sell the requested quantity"
+        : plan.filled
+          ? undefined
+          : "No executable liquidity within limits or insufficient available holdings",
+      sources,
+    };
+    this.state.quotes[quote.id] = {
+      userId,
+      quote,
+      input: full,
+      curve: m.curve,
+    };
+    return quote;
+  }
+
   book(userId: string, marketId: string, outcomeId: string): OrderBook {
     this.tick();
     this.refresh();
     const m = this.marketRecord(userId, marketId);
     if (!m.outcomes.some((o) => o.id === outcomeId))
       fail(422, "INVALID_OUTCOME", "Unknown outcome");
+    return this.curveBook(m, outcomeId);
+  }
+  private curveBook(m: StoredMarket, outcomeId: string): OrderBook {
     const levels = (side: "BUY" | "SELL") => {
       const map = new Map<number, number>();
       for (const o of Object.values(this.state.orders))
@@ -1861,26 +2135,54 @@ export class Store {
     if (m.status === "OPEN") {
       const i = m.outcomes.findIndex((x) => x.id === outcomeId);
       asks.push({
-        price: Number(money(ammCost(m.q, m.b!, i, 1, "BUY"))),
+        price: Number(money(ammCost(m.q, m.b!, i, 1, "BUY", m.curve?.prior))),
         quantity: 1,
         source: "AMM" as "PEER",
       });
       if (m.q[i]! > 0)
         bids.push({
-          price: Number(money(ammCost(m.q, m.b!, i, 1, "SELL"))),
+          price: Number(
+            money(ammCost(m.q, m.b!, i, 1, "SELL", m.curve?.prior)),
+          ),
           quantity: 1,
           source: "AMM" as "PEER",
         });
     }
     return {
-      marketId,
+      marketId: m.id,
       outcomeId,
       bids: bids.sort((a, b) => b.price - a.price),
       asks: asks.sort((a, b) => a.price - b.price),
-      timestamp: this.now(),
+      timestamp: m.curve
+        ? (this.state.liveBooks[m.id + ":" + outcomeId]?.timestamp ??
+          m.updatedAt)
+        : this.now(),
       stale: false,
-      source: "Friends peer orders and next whole-share LMSR lot",
+      source: "OpenTrader peer orders and next whole-share LMSR lot",
     };
+  }
+  liveBook(source: Market, book: OrderBook): OrderBook {
+    return this.transaction(() => {
+      this.syncLiveMarket(source);
+      const m = this.state.markets[source.id]!;
+      if (!this.communityMarket(m)) return book;
+      // Stale feeds remain visibly stale; never substitute a local timestamp.
+      if (
+        book.stale ||
+        this.clock().getTime() - Date.parse(book.timestamp) > 5000
+      )
+        return {
+          ...book,
+          bids: [],
+          asks: [],
+          stale: true,
+          source: "Source confirmation unavailable",
+        };
+      this.validateBook(m, book, book.outcomeId);
+      this.state.liveBooks[m.id + ":" + book.outcomeId] = book;
+      const candidate = m.curve ? m : this.candidateCurve(m, book, "");
+      return this.curveBook(candidate, book.outcomeId);
+    });
   }
   fills(userId: string, marketId: string) {
     this.refresh();
@@ -1890,6 +2192,7 @@ export class Store {
         (f) =>
           f.marketId === marketId &&
           (this.state.markets[marketId]!.exchange === "FRIENDS" ||
+            !!this.state.markets[marketId]!.curve ||
             f.userId === userId),
       )
       .slice(-500)
@@ -1963,15 +2266,24 @@ export class Store {
           ),
           index = m.outcomes.findIndex((x) => x.id === p.outcomeId),
           mark =
-            m.exchange === "FRIENDS"
-              ? probability(m.q, m.b!, index)
+            m.exchange === "FRIENDS" || !!m.curve
+              ? probability(m.q, m.b!, index, m.curve?.prior)
               : m.outcomes[index]!.probability;
         let liquidation = 0n,
           liquidationAvailable = quantity === 0,
           valuationAt = m.updatedAt,
           valuationNote: string | undefined;
         if (quantity && m.status === "OPEN") {
-          if (m.exchange === "FRIENDS") {
+          if (m.exchange === "FRIENDS" || m.curve) {
+            const source = m.curve
+              ? this.state.liveBooks[m.id + ":" + p.outcomeId]
+              : undefined;
+            const fresh =
+              !m.curve ||
+              (!!source &&
+                !source.stale &&
+                Number.isFinite(Date.parse(source.timestamp)) &&
+                this.clock().getTime() - Date.parse(source.timestamp) <= 5000);
             const plan = this.plan(userId, m, {
               outcomeId: p.outcomeId,
               side: "SELL",
@@ -1979,9 +2291,12 @@ export class Store {
               limitPrice: "0.0001",
             });
             liquidation = plan.total;
-            liquidationAvailable = plan.filled === quantity;
-            valuationAt = this.now();
-            if (!liquidationAvailable)
+            liquidationAvailable = fresh && plan.filled === quantity;
+            valuationAt = source?.timestamp ?? this.now();
+            if (!fresh)
+              valuationNote =
+                "Source confirmation is stale; liquidation is indicative only";
+            if (fresh && !liquidationAvailable)
               valuationNote =
                 quantity > 1000
                   ? "Position exceeds the 1,000-share immediate order limit"
@@ -2132,7 +2447,10 @@ export class Store {
     return this.transaction(() => {
       const market = this.marketRecord(userId, marketId);
       this.moderator(userId, market.groupId!);
-      if (market.status !== "HALTED" || market.closeAt <= this.now())
+      if (
+        market.status !== "HALTED" ||
+        Date.parse(market.closeAt) <= this.clock().getTime()
+      )
         fail(
           409,
           "INVALID_STATE",
@@ -2261,7 +2579,7 @@ export class Store {
     return this.transaction(() => {
       const m = this.marketRecord(userId, marketId);
       this.moderator(userId, m.groupId!);
-      if (m.closeAt > this.now())
+      if (Date.parse(m.closeAt) > this.clock().getTime())
         fail(409, "EARLY_CLOSE_FORBIDDEN", "Frozen close time has not passed");
       this.expireAndClose();
       return this.marketView(m);
@@ -2489,7 +2807,7 @@ export class Store {
     }
     this.transfer(
       "escrow:" + m.id,
-      "treasury:" + m.groupId,
+      m.curve ? LIVE_LIQUIDITY_ACCOUNT : "treasury:" + m.groupId,
       this.balance("escrow:" + m.id),
       "cash",
       "RESERVE_RETURN",
@@ -2522,9 +2840,9 @@ export class Store {
         this.cancelInternal(o, "EXPIRED");
     for (const m of Object.values(this.state.markets))
       if (
-        m.exchange === "FRIENDS" &&
+        (m.exchange === "FRIENDS" || !!m.curve) &&
         ["OPEN", "HALTED"].includes(m.status) &&
-        m.closeAt <= this.now()
+        Date.parse(m.closeAt) <= this.clock().getTime()
       ) {
         for (const o of Object.values(this.state.orders))
           if (o.marketId === m.id && o.status === "OPEN")
@@ -2578,9 +2896,11 @@ export class Store {
         ) ||
         Object.values(this.state.markets).some(
           (m) =>
-            m.exchange === "FRIENDS" &&
-            ((["OPEN", "HALTED"].includes(m.status) && m.closeAt <= now) ||
-              (m.status === "CLOSED" &&
+            (m.exchange === "FRIENDS" || !!m.curve) &&
+            ((["OPEN", "HALTED"].includes(m.status) &&
+              Date.parse(m.closeAt) <= ms) ||
+              (m.exchange === "FRIENDS" &&
+                m.status === "CLOSED" &&
                 ms >= this.resolutionReadyAt(m) + 72 * 36e5) ||
               (m.status === "RESOLVING" &&
                 m.resolution &&
@@ -2944,13 +3264,15 @@ export class Store {
     this.refresh(true);
     const rows = this.db
       .prepare(
-        "SELECT transaction_id,asset,account,delta FROM journal ORDER BY id",
+        "SELECT transaction_id,asset,account,delta,reason,reference FROM journal ORDER BY id",
       )
       .all() as unknown as {
       transaction_id: string;
       asset: string;
       account: string;
       delta: string;
+      reason: string;
+      reference: string;
     }[];
     const sums = new Map<string, bigint>(),
       balances = new Map<string, bigint>();
@@ -2974,8 +3296,34 @@ export class Store {
       );
     let inventoryMatches = true,
       escrowsSolvent = true,
-      locksMatch = true;
+      locksMatch = true,
+      riskReservesMatch = true;
     for (const market of Object.values(this.state.markets)) {
+      if (market.curve) {
+        try {
+          const expected = curveReserve(market.curve);
+          const funded = rows
+            .filter(
+              (r) =>
+                r.account === "escrow:" + market.id &&
+                r.reason === "LIVE_MARKET_RESERVE" &&
+                r.reference === market.id,
+            )
+            .reduce((sum, r) => sum + BigInt(r.delta), 0n);
+          if (
+            market.b !== LIVE_LIQUIDITY_B ||
+            market.curve.version !== 2 ||
+            BigInt(market.reserve) !== expected ||
+            funded !== expected ||
+            market.outcomes.length !== 2 ||
+            market.q.length !== 2 ||
+            market.q.some((q) => !Number.isSafeInteger(q) || q < 0)
+          )
+            riskReservesMatch = false;
+        } catch {
+          riskReservesMatch = false;
+        }
+      }
       for (const [index, outcome] of market.outcomes.entries()) {
         const suffix = ":" + market.id + ":" + outcome.id;
         const supply = Object.entries(this.state.accounts)
@@ -2988,12 +3336,13 @@ export class Store {
         if (
           this.balance("issuer:share:" + market.id + ":" + outcome.id) !==
             -supply ||
-          (market.exchange === "FRIENDS" && BigInt(market.q[index]!) !== supply)
+          ((market.exchange === "FRIENDS" || !!market.curve) &&
+            BigInt(market.q[index]!) !== supply)
         )
           inventoryMatches = false;
       }
       if (
-        market.exchange === "FRIENDS" &&
+        (market.exchange === "FRIENDS" || !!market.curve) &&
         this.balance("escrow:" + market.id) <
           BigInt(Math.max(...market.q)) * 1_000_000n
       )
@@ -3032,8 +3381,10 @@ export class Store {
         nonnegative &&
         inventoryMatches &&
         escrowsSolvent &&
-        locksMatch,
+        locksMatch &&
+        riskReservesMatch,
       inventoryMatches,
+      riskReservesMatch,
       escrowsSolvent,
       locksMatch,
       journalBalanced,
@@ -3063,7 +3414,8 @@ export class Store {
           "SELECT request_hash, result FROM admin_events WHERE actor_id=? AND idempotency_key=?",
         )
         .get(actorId, key) as
-        { request_hash: string; result: string } | undefined;
+        | { request_hash: string; result: string }
+        | undefined;
       if (prior) {
         if (prior.request_hash !== digest)
           fail(
@@ -3150,10 +3502,18 @@ export class Store {
             `${money(amount)} play credits adjusted by an administrator`,
           );
         } else {
-          if (!this.state.groups[action.targetId])
-            fail(404, "GROUP_NOT_FOUND", "Group not found");
-          account = "treasury:" + action.targetId;
-          issuer = "issuer:admin-sponsor:" + action.targetId;
+          if (
+            action.targetId === LIVE_LIQUIDITY_ACCOUNT &&
+            this.state.accounts[LIVE_LIQUIDITY_ACCOUNT] !== undefined
+          ) {
+            account = LIVE_LIQUIDITY_ACCOUNT;
+            issuer = "issuer:admin-sponsor:live-1:v2";
+          } else {
+            if (!this.state.groups[action.targetId])
+              fail(404, "GROUP_NOT_FOUND", "Group not found");
+            account = "treasury:" + action.targetId;
+            issuer = "issuer:admin-sponsor:" + action.targetId;
+          }
         }
         before = { account, available: money(this.balance(account)) };
         if (amount > 0n)
@@ -3202,14 +3562,25 @@ export class Store {
         ["HALT_MARKET", "RESUME_MARKET", "CLOSE_MARKET"].includes(action.type)
       ) {
         const m = this.state.markets[action.targetId];
-        if (!m || m.exchange !== "FRIENDS")
-          fail(404, "MARKET_NOT_FOUND", "Private market not found");
+        if (!m || (m.exchange !== "FRIENDS" && !m.curve))
+          fail(404, "MARKET_NOT_FOUND", "Local market not found");
+        if (
+          m.curve &&
+          action.type === "RESUME_MARKET" &&
+          (m.curve.mappingHalted || m.reference?.status !== "OPEN")
+        )
+          fail(
+            409,
+            "SOURCE_HALTED",
+            "Source status or immutable outcome mapping blocks resumption",
+          );
         before = { status: m.status, sequence: m.sequence };
         if (action.type === "HALT_MARKET" && m.status !== "OPEN")
           fail(409, "INVALID_STATE", "Only an open market can be halted");
         if (
           action.type === "RESUME_MARKET" &&
-          (m.status !== "HALTED" || m.closeAt <= this.now())
+          (m.status !== "HALTED" ||
+            Date.parse(m.closeAt) <= this.clock().getTime())
         )
           fail(
             409,
@@ -3218,7 +3589,8 @@ export class Store {
           );
         if (
           action.type === "CLOSE_MARKET" &&
-          (!["OPEN", "HALTED"].includes(m.status) || m.closeAt > this.now())
+          (!["OPEN", "HALTED"].includes(m.status) ||
+            Date.parse(m.closeAt) > this.clock().getTime())
         )
           fail(
             409,
@@ -3229,6 +3601,7 @@ export class Store {
           for (const order of Object.values(this.state.orders))
             if (order.marketId === m.id && order.status === "OPEN")
               this.cancelInternal(order, "CANCELLED");
+        if (m.curve) m.curve.operatorHalted = action.type === "HALT_MARKET";
         m.status =
           action.type === "HALT_MARKET"
             ? "HALTED"
@@ -3398,28 +3771,56 @@ export class Store {
       rows = Object.values(this.state.markets).map((m) => ({
         id: m.id,
         exchange: m.exchange,
+        executionModel: m.curve
+          ? "SOURCE_SEEDED_LMSR"
+          : m.exchange === "LIVE"
+            ? "EXTERNAL_SIM"
+            : undefined,
         primary: m.question,
         secondary: `${m.outcomes.map((o) => o.label).join(" / ")} · closes ${m.closeAt}`,
         scope: scope(m.exchange, m.groupId),
         status: m.status,
         amount:
-          m.exchange === "FRIENDS"
+          m.exchange === "FRIENDS" || !!m.curve
             ? money(this.balance("escrow:" + m.id))
             : undefined,
         createdAt: m.createdAt,
         detail: `${m.exchange} · Creator ${m.creatorId ? handle(m.creatorId) : m.provider} · Resolver ${m.resolverId ? handle(m.resolverId) : "Provider"} · Sequence ${m.sequence} · ${m.rules?.condition ?? m.description} · ${m.rules?.source ?? m.sourceUrl ?? ""} · Rules and settlement governance remain immutable.`,
       }));
     else if (section === "treasuries")
-      rows = Object.values(this.state.groups).map((g) => ({
-        id: g.id,
-        primary: g.name,
-        secondary: `Owner ${handle(g.ownerId)}`,
-        scope: g.name,
-        status: "SPONSOR_BUDGET",
-        amount: money(this.balance("treasury:" + g.id)),
-        createdAt: g.createdAt,
-        detail: `Unreserved sponsor budget only. Open-market reserves are held in market escrow and cannot be reclaimed here. Group ${g.id}`,
-      }));
+      rows = [
+        ...(this.state.accounts[LIVE_LIQUIDITY_ACCOUNT] === undefined
+          ? []
+          : [
+              {
+                id: LIVE_LIQUIDITY_ACCOUNT,
+                primary: "Live market liquidity",
+                secondary: "Independent Live sponsor treasury",
+                scope: "Live",
+                status: "SPONSOR_BUDGET",
+                amount: money(this.balance(LIVE_LIQUIDITY_ACCOUNT)),
+                createdAt: (
+                  this.db
+                    .prepare(
+                      "SELECT min(created_at) AS at FROM journal WHERE account=?",
+                    )
+                    .get(LIVE_LIQUIDITY_ACCOUNT) as { at: string }
+                ).at,
+                detail:
+                  "Free sponsor credits only. Weighted LMSR reserves stay locked in market escrow until provider-final settlement. Separate from user wallets and Friends budgets.",
+              },
+            ]),
+        ...Object.values(this.state.groups).map((g) => ({
+          id: g.id,
+          primary: g.name,
+          secondary: `Owner ${handle(g.ownerId)}`,
+          scope: g.name,
+          status: "SPONSOR_BUDGET",
+          amount: money(this.balance("treasury:" + g.id)),
+          createdAt: g.createdAt,
+          detail: `Unreserved sponsor budget only. Open-market reserves are held in market escrow and cannot be reclaimed here. Group ${g.id}`,
+        })),
+      ];
     else if (section === "audit")
       rows = (
         this.db
@@ -3516,7 +3917,14 @@ export class Store {
       ...new Set(
         Object.values(this.state.positions)
           .filter((p) => this.state.markets[p.marketId]?.exchange === "LIVE")
-          .map((p) => p.marketId),
+          .map((p) => p.marketId)
+          .concat(
+            Object.values(this.state.markets)
+              .filter(
+                (m) => m.curve && !["RESOLVED", "VOID"].includes(m.status),
+              )
+              .map((m) => m.id),
+          ),
       ),
     ];
   }
@@ -3579,12 +3987,53 @@ export class Store {
         }
         return this.marketView(existing);
       }
-      const m: StoredMarket = {
-        ...market,
-        q: [],
-        reserve: "0",
-        sequence: existing?.sequence ?? 0,
-      };
+      const changedRules =
+        !!existing?.curve &&
+        sourceRulesHash(market) !== existing.curve.rulesHash;
+      const sourceOutcomes =
+        existing?.curve && !changedRules
+          ? existing.outcomes.map(
+              (o) => market.outcomes.find((x) => x.id === o.id)!,
+            )
+          : market.outcomes;
+      const m: StoredMarket = existing?.curve
+        ? {
+            ...existing,
+            reference: {
+              outcomes: structuredClone(market.outcomes),
+              timestamp: market.updatedAt,
+              status: market.status,
+              volume: market.volume,
+            },
+            outcomes: changedRules ? existing.outcomes : sourceOutcomes,
+            status: changedRules
+              ? "HALTED"
+              : market.resolution?.state === "FINAL" &&
+                  ["RESOLVED", "VOID"].includes(market.status)
+                ? market.status
+                : existing.curve.mappingHalted || existing.curve.operatorHalted
+                  ? "HALTED"
+                  : Date.parse(market.closeAt) <= this.clock().getTime() ||
+                      Date.parse(existing.closeAt) <= this.clock().getTime()
+                    ? "CLOSED"
+                    : market.status,
+            closeAt:
+              Date.parse(market.closeAt) < Date.parse(existing.closeAt)
+                ? market.closeAt
+                : existing.closeAt,
+            resolution: changedRules ? existing.resolution : market.resolution,
+            sourceUrl: market.sourceUrl,
+            updatedAt: this.now(),
+          }
+        : { ...market, q: [], reserve: "0", sequence: existing?.sequence ?? 0 };
+      if (changedRules && m.curve) m.curve.mappingHalted = true;
+      if (m.curve && m.status !== "OPEN") {
+        for (const order of Object.values(this.state.orders))
+          if (order.marketId === m.id && order.status === "OPEN")
+            this.cancelInternal(order, "CANCELLED");
+      }
+      if (existing?.curve && m.status !== existing.status)
+        m.sequence = Math.max(m.sequence, existing.sequence) + 1;
       this.state.markets[m.id] = m;
       if (book) {
         this.validateBook(m, book, book.outcomeId);
@@ -3607,6 +4056,11 @@ export class Store {
             "MISSING_PROVIDER_EVIDENCE",
             "Final provider evidence is required",
           );
+        if (m.curve) {
+          m.status = "CLOSED";
+          this.settle(m, outcomeId, "Verified final provider resolution");
+          return this.marketView(m);
+        }
         m.settledHoldings = [];
         for (const p of Object.values(this.state.positions).filter(
           (p) => p.marketId === m.id,
@@ -3683,7 +4137,7 @@ export class Store {
         "External source timestamp is missing or older than five seconds",
       );
     for (const list of [book.bids, book.asks])
-      for (const level of list)
+      for (const level of list) {
         if (
           !Number.isFinite(level.price) ||
           level.price <= 0 ||
@@ -3692,6 +4146,16 @@ export class Store {
           level.quantity < 0
         )
           fail(422, "INVALID_BOOK", "Invalid external level");
+        try {
+          units(level.price);
+        } catch {
+          fail(
+            422,
+            "INVALID_BOOK_PRECISION",
+            "External prices require at most six decimal places",
+          );
+        }
+      }
   }
   private walkLive(book: OrderBook, input: OrderInput) {
     const levels = [...(input.side === "BUY" ? book.asks : book.bids)].sort(
@@ -3736,8 +4200,15 @@ export class Store {
   ): Quote {
     return this.transaction(() => {
       const m = this.liveMarket(userId, market);
-      this.assertTrading(userId, m, input.outcomeId);
       this.validateBook(m, book, input.outcomeId);
+      this.state.liveBooks[m.id + ":" + input.outcomeId] = book;
+      this.assertTrading(userId, m, input.outcomeId);
+      if (this.communityMarket(m))
+        return this.quoteCurve(
+          userId,
+          this.candidateCurve(m, book, userId),
+          input,
+        );
       const full: OrderInput = {
         ...input,
         marketId: m.id,
@@ -3756,6 +4227,8 @@ export class Store {
               BigInt(input.quantity);
       const quote: Quote = {
         id: id(),
+        engineVersion: 1,
+        executionModel: "EXTERNAL_SIM",
         marketId: m.id,
         outcomeId: input.outcomeId,
         side: input.side,
@@ -3801,12 +4274,6 @@ export class Store {
   ): OrderReceipt {
     return this.transaction(() => {
       this.validateInput(input);
-      if (input.timeInForce !== "IOC")
-        fail(
-          422,
-          "LIVE_IOC_ONLY",
-          "External simulation supports immediate orders only",
-        );
       if (typeof key !== "string" || key.length < 4 || key.length > 200)
         fail(
           422,
@@ -3832,9 +4299,54 @@ export class Store {
           "Input market does not match fetched market",
         );
       const m = this.liveMarket(userId, market);
-      this.assertTrading(userId, m, input.outcomeId);
       this.validateBook(m, book, input.outcomeId);
       this.state.liveBooks[m.id + ":" + input.outcomeId] = book;
+      this.assertTrading(userId, m, input.outcomeId);
+      this.state.liveBooks[m.id + ":" + input.outcomeId] = book;
+      if (this.communityMarket(m)) {
+        if (!m.curve) {
+          const candidate = this.candidateCurve(m, book, userId);
+          this.validateQuote(userId, candidate, input);
+          const quoted = input.quoteId
+            ? this.state.quotes[input.quoteId]?.curve
+            : undefined;
+          if (
+            quoted &&
+            (quoted.rulesHash !== candidate.curve!.rulesHash ||
+              quoted.prior.some((p, i) => p !== candidate.curve!.prior[i]))
+          )
+            fail(
+              409,
+              "REQUOTE",
+              "Source opening odds changed; request a new quote",
+            );
+          if (
+            input.timeInForce === "IOC" &&
+            !this.plan(userId, candidate, input).filled
+          )
+            fail(
+              409,
+              "NO_FILL",
+              "No liquidity within the protected price or available balance",
+            );
+          this.transfer(
+            LIVE_LIQUIDITY_ACCOUNT,
+            "escrow:" + m.id,
+            BigInt(candidate.reserve),
+            "cash",
+            "LIVE_MARKET_RESERVE",
+            m.id,
+          );
+          this.state.markets[m.id] = candidate;
+        }
+        return this.execute(userId, input, key);
+      }
+      if (input.timeInForce !== "IOC")
+        fail(
+          422,
+          "LIVE_IOC_ONLY",
+          "External simulation supports immediate orders only",
+        );
       this.validateQuote(userId, m, input);
       const result = this.walkLive(book, input),
         w = this.walletRecord(userId, "LIVE", null);
