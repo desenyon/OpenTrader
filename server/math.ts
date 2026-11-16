@@ -33,18 +33,41 @@ export function units(value: string | number): bigint {
     throw new Error("Cash is outside the supported range");
   return negative ? -amount : amount;
 }
-export function probability(q: number[], b: number, index: number): number {
+export type Prior = readonly [number, number];
+function weights(prior?: Prior): readonly number[] {
+  if (!prior) return [1, 1];
+  if (
+    prior.length !== 2 ||
+    prior.some((value) => !Number.isSafeInteger(value) || value <= 0) ||
+    prior[0] + prior[1] !== 1_000_000
+  )
+    throw new Error("Invalid LMSR prior");
+  return prior;
+}
+export function probability(
+  q: number[],
+  b: number,
+  index: number,
+  prior?: Prior,
+): number {
+  const w = weights(prior);
   const max = Math.max(...q);
-  const es = q.map((x) => new D(x - max).div(b).exp());
+  const es = q.map((x, i) => new D(x - max).div(b).exp().mul(w[i]!));
   return es[index]!.div(es.reduce((a, v) => a.add(v), new D(0))).toNumber();
 }
-function cost(q: number[], b: number, ctor: typeof Decimal): Decimal {
+function cost(
+  q: number[],
+  b: number,
+  ctor: typeof Decimal,
+  prior?: Prior,
+): Decimal {
+  const w = weights(prior);
   const max = Math.max(...q);
   return new ctor(max).add(
     new ctor(b).mul(
       q
         .reduce(
-          (sum, v) => sum.add(new ctor(v - max).div(b).exp()),
+          (sum, v, i) => sum.add(new ctor(v - max).div(b).exp().mul(w[i]!)),
           new ctor(0),
         )
         .ln(),
@@ -57,7 +80,9 @@ export function ammCost(
   index: number,
   quantity: number,
   side: Side,
+  prior?: Prior,
 ): bigint {
+  weights(prior);
   if (
     q.length !== 2 ||
     ![0, 1].includes(index) ||
@@ -83,18 +108,21 @@ export function ammCost(
     throw new Error("Outside supported LMSR log-odds domain");
   // Symmetry gives an exact rational cost when the trade crosses the other
   // outcome's inventory by equal distances; avoid numerical subtraction here.
-  if (q[index]! + next[index] === 2 * q[1 - index]!)
+  if (
+    (!prior || prior[0] === prior[1]) &&
+    q[index]! + next[index] === 2 * q[1 - index]!
+  )
     return BigInt(quantity) * 500_000n;
-  const a = cost(q, b, D),
-    c = cost(next, b, D);
+  const a = cost(q, b, D, prior),
+    c = cost(next, b, D, prior);
   const amount = (side === "BUY" ? c.sub(a) : a.sub(c)).mul(MICRO);
   // The bounded domain and 80-digit arithmetic leave >50 guard digits at microcredit scale.
   // Compare at independent precision and fail closed near an ambiguous rounding boundary.
   const E = Decimal.clone({ precision: 60 });
   const check = (
     side === "BUY"
-      ? cost(next, b, E).sub(cost(q, b, E))
-      : cost(q, b, E).sub(cost(next, b, E))
+      ? cost(next, b, E, prior).sub(cost(q, b, E, prior))
+      : cost(q, b, E, prior).sub(cost(next, b, E, prior))
   ).mul(1_000_000);
   const mode = side === "BUY" ? Decimal.ROUND_CEIL : Decimal.ROUND_FLOOR;
   // All intermediate costs are <= 1,010,000 and exp arguments are [-30, 0].
@@ -112,9 +140,17 @@ export function ammCost(
     throw new Error("LMSR debit precision unsafe");
   return result;
 }
-export function reserve(b: number): bigint {
+export function reserve(b: number, prior?: Prior): bigint {
+  const w = weights(prior);
+  if (!Number.isInteger(b) || b < 10 || b > 10000)
+    throw new Error("Invalid liquidity");
   return (
-    BigInt(new D(b).mul(new D(2).ln()).mul(MICRO).ceil().toFixed(0)) +
-    1_000_000n
+    BigInt(
+      new D(b)
+        .mul(new D(w[0]! + w[1]!).div(Math.min(...w)).ln())
+        .mul(MICRO)
+        .ceil()
+        .toFixed(0),
+    ) + 1_000_000n
   );
 }
