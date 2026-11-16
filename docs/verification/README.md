@@ -1,3 +1,5 @@
+> Current engine verification: [November 16 credit economy](credit-economy.md).
+
 > Historical November 13 release record. The [November 15 redesign](redesign.md) supersedes the terminal UI and its screenshots.
 
 # Final local verification
