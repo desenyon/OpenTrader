@@ -6,7 +6,7 @@ import { friendsHistory } from "./friends-history.js";
 import type { Market, OrderBook, Candle } from "../shared/types.js";
 interface Providers {
   listMarkets(provider?: string, search?: string): Promise<Market[]>;
-  getMarket(id: string): Promise<Market>;
+  getMarket(id: string, options?: { fresh?: boolean }): Promise<Market>;
   getBook(
     marketId: string,
     outcomeId: string,
@@ -41,6 +41,7 @@ const orderSchema = z.object({
   quoteId: z.string().optional(),
   expectedSequence: z.number().int().optional(),
   ruleVersion: z.number().int().optional(),
+  engineVersion: z.number().int().min(1).max(2).optional(),
 });
 const quoteSchema = z.object({
   outcomeId: z.string(),
@@ -240,7 +241,9 @@ export async function registerRoutes(
   app.get("/api/markets", async (request) => {
     const q = query(request);
     if (q.exchange === "LIVE")
-      return providers().listMarkets(q.provider, q.search);
+      return (await providers().listMarkets(q.provider, q.search)).map((m) =>
+        store.projectLiveMarket(m),
+      );
     return store.markets(uid(request), q.groupId);
   });
   app.post("/api/markets", async (request) =>
@@ -270,7 +273,7 @@ export async function registerRoutes(
   );
   app.get("/api/markets/:id", async (request) =>
     liveId(param(request))
-      ? providers().getMarket(param(request))
+      ? store.projectLiveMarket(await providers().getMarket(param(request)))
       : store.market(uid(request), param(request)),
   );
   app.post("/api/markets/:id/approve", async (request) =>
@@ -279,9 +282,13 @@ export async function registerRoutes(
   app.get("/api/markets/:id/book", async (request) => {
     const marketId = param(request),
       outcomeId = query(request).outcomeId ?? "yes";
-    return liveId(marketId)
-      ? providers().getBook(marketId, outcomeId)
-      : store.book(uid(request), marketId, outcomeId);
+    if (!liveId(marketId)) return store.book(uid(request), marketId, outcomeId);
+    const p = providers();
+    const [market, book] = await Promise.all([
+      p.getMarket(marketId),
+      p.getBook(marketId, outcomeId),
+    ]);
+    return store.liveBook(market, book);
   });
   app.get("/api/markets/:id/history", async (request) => {
     const marketId = param(request),
@@ -289,16 +296,25 @@ export async function registerRoutes(
     const interval = z
       .enum(["1h", "6h", "1d", "1w", "max"])
       .parse(q.interval ?? "1d");
-    return liveId(marketId)
-      ? providers().getHistory(marketId, q.outcomeId ?? "yes", interval)
-      : friendsHistory(
-          store,
-          uid(request),
-          marketId,
-          q.outcomeId ?? "yes",
-          interval,
-          (q.series ?? "amm") as "amm" | "trades",
-        );
+    if (liveId(marketId)) {
+      const market = store.projectLiveMarket(
+        await providers().getMarket(marketId),
+      );
+      if (
+        market.executionModel !== "SOURCE_SEEDED_LMSR" ||
+        q.series === "reference"
+      )
+        return providers().getHistory(marketId, q.outcomeId ?? "yes", interval);
+      if (!market.pricing?.active) return [];
+    }
+    return friendsHistory(
+      store,
+      uid(request),
+      marketId,
+      q.outcomeId ?? "yes",
+      interval,
+      (q.series ?? "amm") as "amm" | "trades",
+    );
   });
   app.post("/api/markets/:id/quote", async (request) => {
     const userId = uid(request),
@@ -306,7 +322,7 @@ export async function registerRoutes(
       body = quoteSchema.parse(request.body);
     if (!liveId(marketId)) return store.quote(userId, marketId, body);
     const p = providers(),
-      market = await p.getMarket(marketId),
+      market = await p.getMarket(marketId, { fresh: true }),
       book = await p.getBook(marketId, body.outcomeId, { fresh: true });
     return store.quoteLive(userId, market, book, body);
   });
@@ -326,7 +342,7 @@ export async function registerRoutes(
       );
     if (!liveId(input.marketId)) return store.execute(userId, input, key);
     const p = providers(),
-      market = await p.getMarket(input.marketId),
+      market = await p.getMarket(input.marketId, { fresh: true }),
       book = await p.getBook(input.marketId, input.outcomeId, { fresh: true });
     return store.executeLive(userId, market, book, input, key);
   });
