@@ -1,3 +1,5 @@
+> Friends now uses the [simplified creator-controlled workflow](../verification/simple-friends.md) by default. This document records the preceding Live-engine upgrade; its Live pricing and backing rules still apply.
+
 # Credit-driven Live markets
 
 Implemented November 16, 2026. This replaces source-following paper execution for **new eligible binary Live markets**. Existing markets with external-simulator fills retain their original model. Friends remains a separate private economy.
