@@ -631,6 +631,7 @@ export class Store {
     };
   }
   wallets(userId: string): Wallet[] {
+    if (!this.inTx) this.tick();
     this.refresh();
     this.user(userId);
     return Object.values(this.state.wallets)
@@ -1020,21 +1021,35 @@ export class Store {
       category?: string;
       closeAt: string;
       b?: number;
-      rules: MarketRules;
+      rules?: MarketRules;
     },
   ): Market {
     return this.transaction(() => {
       this.membership(userId, input.groupId);
+      const casual = input.rules === undefined;
       validateMarketContent(input);
       if (
         typeof input.question !== "string" ||
-        input.question.trim().length < 10 ||
+        input.question.trim().length < (casual ? 3 : 10) ||
         input.question.length > 240
       )
-        fail(422, "INVALID_QUESTION", "Question requires 10–240 characters");
+        fail(
+          422,
+          "INVALID_QUESTION",
+          `Question requires ${casual ? 3 : 10}–240 characters`,
+        );
       const close = Date.parse(input.closeAt),
-        r = input.rules,
-        b = input.b ?? 500;
+        r: MarketRules = input.rules ?? {
+          condition: input.question.trim(),
+          source: "Group decision",
+          evidence: "",
+          observationAt: input.closeAt,
+          voidPolicy: BINARY_VOID_POLICY,
+          disputeHours: 0,
+          resolverId: userId,
+          reviewerIds: [],
+        },
+        b = input.b ?? (casual ? 100 : 500);
       if (!Number.isFinite(close) || close <= this.clock().getTime())
         fail(422, "INVALID_CLOSE", "Close time must be in the future");
       if (!Number.isInteger(b) || b < 10 || b > 10000)
@@ -1043,44 +1058,46 @@ export class Store {
           "INVALID_LIQUIDITY",
           "Liquidity b must be an integer from 10 to 10,000",
         );
-      if (
-        !r ||
-        !r.condition?.trim() ||
-        !r.source?.trim() ||
-        !r.evidence?.trim() ||
-        !Number.isFinite(Date.parse(r.observationAt))
-      )
-        fail(
-          422,
-          "INVALID_RULES",
-          "Complete objective rules and observation deadline are required",
-        );
-      if (Date.parse(r.observationAt) < close)
-        fail(
-          422,
-          "INVALID_OBSERVATION",
-          "The observation deadline must be at or after trading close",
-        );
-      if (r.disputeHours !== 24)
-        fail(422, "INVALID_RULES", "Challenge window is frozen at 24 hours");
-      this.membership(r.resolverId, input.groupId);
-      if (r.resolverId === userId)
-        fail(
-          422,
-          "CONFLICTED_RESOLVER",
-          "Creator cannot resolve their own market",
-        );
-      if (
-        !Array.isArray(r.reviewerIds) ||
-        new Set(r.reviewerIds).size !== r.reviewerIds.length ||
-        r.reviewerIds.some((x) => x === userId || x === r.resolverId)
-      )
-        fail(
-          422,
-          "INVALID_REVIEWERS",
-          "Reviewers must be distinct from creator and resolver",
-        );
-      r.reviewerIds.forEach((x) => this.membership(x, input.groupId));
+      if (!casual) {
+        if (
+          !r ||
+          !r.condition?.trim() ||
+          !r.source?.trim() ||
+          !r.evidence?.trim() ||
+          !Number.isFinite(Date.parse(r.observationAt))
+        )
+          fail(
+            422,
+            "INVALID_RULES",
+            "Complete objective rules and observation deadline are required",
+          );
+        if (Date.parse(r.observationAt) < close)
+          fail(
+            422,
+            "INVALID_OBSERVATION",
+            "The observation deadline must be at or after trading close",
+          );
+        if (r.disputeHours !== 24)
+          fail(422, "INVALID_RULES", "Challenge window is frozen at 24 hours");
+        this.membership(r.resolverId, input.groupId);
+        if (r.resolverId === userId)
+          fail(
+            422,
+            "CONFLICTED_RESOLVER",
+            "Creator cannot resolve their own market",
+          );
+        if (
+          !Array.isArray(r.reviewerIds) ||
+          new Set(r.reviewerIds).size !== r.reviewerIds.length ||
+          r.reviewerIds.some((x) => x === userId || x === r.resolverId)
+        )
+          fail(
+            422,
+            "INVALID_REVIEWERS",
+            "Reviewers must be distinct from creator and resolver",
+          );
+        r.reviewerIds.forEach((x) => this.membership(x, input.groupId));
+      }
       const m: StoredMarket = {
         id: id(),
         exchange: "FRIENDS",
@@ -1093,7 +1110,8 @@ export class Store {
           { id: "yes", label: "YES", probability: 0.5 },
           { id: "no", label: "NO", probability: 0.5 },
         ],
-        status: "DRAFT",
+        status: casual ? "OPEN" : "DRAFT",
+        resolutionMode: casual ? "CREATOR" : "REVIEWED",
         volume: 0,
         liquidity: 0,
         closeAt: new Date(close).toISOString(),
@@ -1111,6 +1129,19 @@ export class Store {
         q: [0, 0],
         reserve: "0",
       };
+      if (casual) {
+        const funding = reserve(b);
+        this.transfer(
+          "treasury:" + m.groupId,
+          "escrow:" + m.id,
+          funding,
+          "cash",
+          "MARKET_RESERVE",
+          m.id,
+        );
+        m.reserve = funding.toString();
+        m.liquidity = Number(money(funding));
+      }
       this.state.markets[m.id] = m;
       return this.marketView(m);
     });
@@ -1238,7 +1269,11 @@ export class Store {
       fail(409, "MARKET_CLOSED", "Market is not open");
     if (!m.outcomes.some((x) => x.id === outcomeId))
       fail(422, "INVALID_OUTCOME", "Unknown outcome");
-    if (m.exchange === "FRIENDS" && userId === m.resolverId)
+    if (
+      m.exchange === "FRIENDS" &&
+      m.resolutionMode !== "CREATOR" &&
+      userId === m.resolverId
+    )
       fail(
         403,
         "RESOLVER_CANNOT_TRADE",
@@ -2247,6 +2282,7 @@ export class Store {
     return [...buckets.values()].sort((a, b) => a.time - b.time);
   }
   positions(userId: string, exchange?: Exchange, groupId?: string): Position[] {
+    if (!this.inTx) this.tick();
     this.refresh();
     this.user(userId);
     if (groupId) this.membership(userId, groupId);
@@ -2266,9 +2302,16 @@ export class Store {
           ),
           index = m.outcomes.findIndex((x) => x.id === p.outcomeId),
           mark =
-            m.exchange === "FRIENDS" || !!m.curve
-              ? probability(m.q, m.b!, index, m.curve?.prior)
-              : m.outcomes[index]!.probability;
+            m.resolution?.state === "FINAL" &&
+            ["RESOLVED", "VOID"].includes(m.status)
+              ? m.resolution.outcomeId === null
+                ? 0.5
+                : m.resolution.outcomeId === p.outcomeId
+                  ? 1
+                  : 0
+              : m.exchange === "FRIENDS" || !!m.curve
+                ? probability(m.q, m.b!, index, m.curve?.prior)
+                : m.outcomes[index]!.probability;
         let liquidation = 0n,
           liquidationAvailable = quantity === 0,
           valuationAt = m.updatedAt,
@@ -2585,6 +2628,136 @@ export class Store {
       return this.marketView(m);
     });
   }
+  openFriendsBet(userId: string, marketId: string): Market {
+    return this.transaction(() => {
+      const m = this.marketRecord(userId, marketId);
+      if (m.exchange !== "FRIENDS")
+        fail(422, "FRIENDS_ONLY", "Only Friends bets can be opened here");
+      const member = this.membership(userId, m.groupId!);
+      if (
+        m.creatorId !== userId &&
+        !["OWNER", "MODERATOR"].includes(member.role) &&
+        this.user(userId).platformRole !== "ADMIN"
+      )
+        fail(
+          403,
+          "DECIDER_REQUIRED",
+          "Only the bet creator, group owner or moderator can open this bet",
+        );
+      if (m.status === "OPEN" && m.resolutionMode === "CREATOR")
+        return this.marketView(m);
+      if (
+        m.status !== "DRAFT" ||
+        Date.parse(m.closeAt) <= this.clock().getTime()
+      )
+        fail(
+          409,
+          "INVALID_STATE",
+          "Only a draft with a future closing time can be opened",
+        );
+      validateMarketContent(m);
+      const funding = reserve(m.b!);
+      this.transfer(
+        "treasury:" + m.groupId,
+        "escrow:" + m.id,
+        funding,
+        "cash",
+        "MARKET_RESERVE",
+        m.id,
+      );
+      this.recordModeration(userId, m.groupId!, "OPEN_BET", m.id, {
+        previousResolverId: m.resolverId,
+        previousMode: m.resolutionMode ?? "REVIEWED",
+      });
+      m.resolutionMode = "CREATOR";
+      m.resolverId = m.creatorId;
+      m.reserve = funding.toString();
+      m.liquidity = Number(money(funding));
+      m.approvedBy = userId;
+      m.status = "OPEN";
+      m.sequence++;
+      m.updatedAt = this.now();
+      return this.marketView(m);
+    });
+  }
+  resolveFriendsBet(
+    userId: string,
+    marketId: string,
+    outcomeId: string | null,
+  ): Market {
+    return this.transaction(() => {
+      const m = this.marketRecord(userId, marketId);
+      if (m.exchange !== "FRIENDS")
+        fail(
+          422,
+          "FRIENDS_ONLY",
+          "Live outcomes follow the provider's final result",
+        );
+      const membership = this.membership(userId, m.groupId!);
+      if (
+        m.creatorId !== userId &&
+        !["OWNER", "MODERATOR"].includes(membership.role) &&
+        this.user(userId).platformRole !== "ADMIN"
+      )
+        fail(
+          403,
+          "DECIDER_REQUIRED",
+          "Only the bet creator, group owner or moderator can resolve this bet",
+        );
+      if (outcomeId !== null && !m.outcomes.some((o) => o.id === outcomeId))
+        fail(422, "INVALID_OUTCOME", "Choose Yes, No or Cancel");
+      if (["RESOLVED", "VOID"].includes(m.status)) {
+        if (m.resolution?.outcomeId === outcomeId) return this.marketView(m);
+        fail(
+          409,
+          "ALREADY_SETTLED",
+          "This bet is already settled; its final result cannot be replaced",
+        );
+      }
+      if (!["OPEN", "HALTED", "CLOSED", "RESOLVING"].includes(m.status))
+        fail(409, "INVALID_STATE", "Only an opened bet can be resolved");
+      const actor = this.user(userId).handle;
+      const result =
+        outcomeId === null
+          ? "Bet canceled"
+          : `Resolved ${m.outcomes.find((o) => o.id === outcomeId)!.label}`;
+      const previous = {
+        status: m.status,
+        mode: m.resolutionMode ?? "REVIEWED",
+        resolverId: m.resolverId,
+        resolution: structuredClone(m.resolution),
+      };
+      m.resolutionMode = "CREATOR";
+      m.resolverId = m.creatorId;
+      m.determinedAt = this.now();
+      m.calibrationReason =
+        "Creator-decided result without an independently established answer timestamp";
+      m.resolution = {
+        id: id(),
+        outcomeId,
+        evidence: "",
+        rationale: `${result} by @${actor}`,
+        proposedBy: userId,
+        proposedAt: this.now(),
+        disputeUntil: this.now(),
+        state: "FINAL",
+        disputes: [],
+        reviews: [],
+      };
+      this.recordModeration(userId, m.groupId!, "RESOLVE_BET", m.id, {
+        outcomeId,
+        previous,
+      });
+      m.status = "CLOSED";
+      this.settle(m, outcomeId, `${result} by @${actor}`);
+      this.notifyMarket(
+        m,
+        result,
+        `@${actor} settled this bet. Payouts and unlocked credits are available now.`,
+      );
+      return this.marketView(m);
+    });
+  }
   private resolutionReadyAt(m: Market) {
     return Math.max(
       Date.parse(m.closeAt),
@@ -2854,7 +3027,7 @@ export class Store {
   }
   private finalizeDue() {
     for (const m of Object.values(this.state.markets)) {
-      if (m.exchange !== "FRIENDS") continue;
+      if (m.exchange !== "FRIENDS" || m.resolutionMode === "CREATOR") continue;
       const r = m.resolution;
       if (
         m.status === "CLOSED" &&
@@ -2900,6 +3073,7 @@ export class Store {
             ((["OPEN", "HALTED"].includes(m.status) &&
               Date.parse(m.closeAt) <= ms) ||
               (m.exchange === "FRIENDS" &&
+                m.resolutionMode !== "CREATOR" &&
                 m.status === "CLOSED" &&
                 ms >= this.resolutionReadyAt(m) + 72 * 36e5) ||
               (m.status === "RESOLVING" &&
