@@ -1,3 +1,5 @@
+> Historical November 14 benchmark. See the [November 16 economy benchmark](../verification/credit-economy.md) for current engine measurements.
+
 # Local performance verification
 
 The final 20-request workload completed with HTTP p95 between **155.130 and 180.257 ms**. A simultaneous 100-user burst had p95 **924.698 ms** and p99 **965.447 ms**. Every intended order filled one share and every request succeeded; all seven accounting reconciliation flags passed. These are local measurements, not a production-capacity claim.
