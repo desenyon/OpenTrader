@@ -1,70 +1,94 @@
-import { useCallback, useEffect, useState } from "react";
 import {
-  Activity,
-  ArrowDownRight,
-  ArrowUpRight,
+  Component,
+  lazy,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  ArrowLeft,
+  ArrowRight,
   Bell,
-  BookOpen,
-  Check,
+  Bookmark,
   ChevronDown,
-  CircleHelp,
   ExternalLink,
   Flag,
-  Globe2,
-  Layers3,
-  Maximize2,
   Menu,
   Moon,
   Plus,
-  Radio,
-  RefreshCw,
   Search,
-  Settings2,
   ShieldCheck,
-  Star,
   Sun,
-  Trophy,
   Users,
-  Wallet as WalletIcon,
-  X,
 } from "lucide-react";
 import type {
   Bootstrap,
   Exchange,
+  Group,
   Market,
   Order,
   OrderBook,
   Position,
 } from "../shared/types";
-import { post, refreshAll, useEvents, useResource } from "./api";
+import { api, post, refreshAll, useEvents, useResource } from "./api";
 import { downloadJournal } from "./journal";
-import { MarketChart } from "./Chart";
 import {
   AuthDialog,
   CreateMarketDialog,
   GroupsDialog,
   LeaderboardDialog,
-  MarketSearch,
   NotificationsDialog,
   ProfileDialog,
 } from "./Dialogs";
 import { MarketTables, type TerminalTab } from "./MarketTables";
 import { TradeTicket } from "./TradeTicket";
+import { MarketCard } from "./MarketCard";
 import { ModerationDialog, ReportDialog } from "./Moderation";
+import { Empty, ErrorNote, Loading, Modal } from "./ui";
+import { credits, errorMessage } from "./utils";
 import {
-  Badge,
-  Empty,
-  ErrorNote,
-  IconButton,
-  Loading,
-  Modal,
-  Select,
-} from "./ui";
-import { cents, compact, credits, date, errorMessage, percent } from "./utils";
+  chance,
+  discoverMarkets,
+  marketTopic,
+  topics,
+  type MarketSort,
+} from "./market-discovery";
+import {
+  readRoute,
+  routeHash,
+  routeForMarket,
+  type AppRoute,
+} from "./navigation";
 
+const MarketChart = lazy(() =>
+  import("./Chart").then((module) => ({ default: module.MarketChart })),
+);
+class ChartBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    if (this.state.failed)
+      return (
+        <div className="history-empty">
+          The app was updated.{" "}
+          <button className="text-link" onClick={() => location.reload()}>
+            Reload to show the chart
+          </button>
+        </div>
+      );
+    return this.props.children;
+  }
+}
 type Dialog =
   | "auth"
-  | "search"
   | "groups"
   | "create"
   | "leaderboard"
@@ -74,19 +98,6 @@ type Dialog =
   | "report"
   | "moderation"
   | null;
-type ProviderStatus = {
-  enabled: boolean;
-  providers: Record<
-    string,
-    {
-      state: string;
-      lastSuccessAt?: string | null;
-      error?: string;
-      dataUse?: string;
-    }
-  >;
-  freshnessLimitMs?: number;
-};
 function preference(name: string, fallback: string) {
   try {
     return localStorage.getItem(`opentrader:${name}`) || fallback;
@@ -98,758 +109,947 @@ function savePreference(name: string, value: string) {
   try {
     localStorage.setItem(`opentrader:${name}`, value);
   } catch {
-    /* Private browsing may make preferences ephemeral. */
+    /* Preferences are optional. */
   }
 }
 export default function App() {
-  const [exchange, setExchange] = useState<Exchange>(() =>
-    preference("exchange", "LIVE") === "FRIENDS" ? "FRIENDS" : "LIVE",
-  );
-  const [groupId, setGroupId] = useState(""),
-    [marketId, setMarketId] = useState(""),
-    [outcomeId, setOutcomeId] = useState("");
-  const [theme, setTheme] = useState(() => preference("theme", "dark")),
-    [dialog, setDialog] = useState<Dialog>(null),
-    [tab, setTab] = useState<TerminalTab>("activity");
-  const [category, setCategory] = useState("all"),
-    [provider, setProvider] = useState("all"),
-    [watchOnly, setWatchOnly] = useState(false),
-    [expanded, setExpanded] = useState(false),
-    [actionError, setActionError] = useState("");
-  const [watched, setWatched] = useState<string[]>(() => {
-    try {
-      return JSON.parse(preference("watchlist", "[]"));
-    } catch {
-      return [];
-    }
-  });
-  const [clock, setClock] = useState(new Date());
+  const [route, setRoute] = useState<AppRoute>(() => readRoute(location.hash));
+  const [theme, setTheme] = useState(() => preference("theme", "dark"));
+  const [dialog, setDialog] = useState<Dialog>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [outcomeId, setOutcomeId] = useState("");
+  const [topic, setTopic] = useState("All");
+  const [query, setQuery] = useState("");
+  const [provider, setProvider] = useState("all");
+  const [sort, setSort] = useState<MarketSort>("discover");
+  const [following, setFollowing] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(18);
+  const [tab, setTab] = useState<TerminalTab>("rules");
+  const [portfolioTab, setPortfolioTab] = useState<TerminalTab>("positions");
+  const [actionError, setActionError] = useState("");
+  const [watched, setWatched] = useState<string[]>([]);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const bootstrap = useResource<Bootstrap>("/bootstrap", 15000);
-  const operational = useResource<{ tradingEnabled: boolean; reason?: string }>(
-    "/exchange-status",
-    15000,
-  );
-  const tradingEnabled =
-    operational.data?.tradingEnabled !== false && !operational.error;
-  const user = bootstrap.data?.user || null,
-    groups = bootstrap.data?.groups || [];
+  const user = bootstrap.data?.user || null;
+  const groups = bootstrap.data?.groups || [];
+  const exchange = route.exchange;
+  const groupId =
+    route.groupId || bootstrap.data?.activeGroupId || groups[0]?.id || "";
   const group = groups.find((g) => g.id === groupId);
-  const scope = `exchange=${exchange}${exchange === "FRIENDS" && groupId ? `&groupId=${encodeURIComponent(groupId)}` : ""}`;
+  const scope = `exchange=${exchange}${exchange === "FRIENDS" ? `&groupId=${encodeURIComponent(groupId)}` : ""}`;
+  const navigate = useCallback((next: AppRoute) => {
+    location.hash = routeHash(next);
+  }, []);
+  const closeDialog = useCallback(() => setDialog(null), []);
+  const openMarket = useCallback(
+    (market: Market, selectedOutcome?: string) => {
+      setOutcomeId(selectedOutcome || "");
+      setTab("rules");
+      setActionError("");
+      navigate(routeForMarket(market));
+      window.scrollTo({ top: 0 });
+    },
+    [navigate],
+  );
+  const selectMarket = useCallback(
+    (id: string) => {
+      // Notifications and history can point into another wallet or group.
+      void api<Market>(`/markets/${encodeURIComponent(id)}`)
+        .then((item) => openMarket(item))
+        .catch((reason) => setActionError(errorMessage(reason)));
+    },
+    [openMarket],
+  );
   const marketsResource = useResource<Market[]>(
     exchange === "FRIENDS" && (!user || !groupId)
       ? null
-      : `/markets?${scope}${provider !== "all" && exchange === "LIVE" ? `&provider=${provider}` : ""}`,
-    15000,
+      : `/markets?${scope}${exchange === "LIVE" && provider !== "all" ? `&provider=${provider}` : ""}`,
+    10000,
   );
   const allMarkets = Array.isArray(marketsResource.data)
     ? marketsResource.data
     : [];
-  const categories = [...new Set(allMarkets.map((m) => m.category))]
-    .filter(Boolean)
-    .sort();
-  const visibleMarkets = allMarkets.filter(
-    (m) =>
-      (category === "all" || m.category === category) &&
-      (!watchOnly || watched.includes(m.id)),
-  );
-  const defaultMarket =
-    visibleMarkets.find(
-      (m) =>
-        m.status === "OPEN" &&
-        (m.outcomes[0]?.probability || 0) > 0.05 &&
-        (m.outcomes[0]?.probability || 0) < 0.95 &&
-        m.liquidity > 0,
-    ) ||
-    visibleMarkets.find(
-      (m) =>
-        m.status === "OPEN" &&
-        (m.outcomes[0]?.probability || 0) > 0.05 &&
-        (m.outcomes[0]?.probability || 0) < 0.95,
-    ) ||
-    visibleMarkets[0];
-  const marketFromList = marketId
-    ? allMarkets.find((m) => m.id === marketId)
-    : defaultMarket;
-  const selectedId = marketId || defaultMarket?.id;
-  useEffect(() => {
-    if (!marketId && defaultMarket) setMarketId(defaultMarket.id);
-  }, [marketId, defaultMarket?.id]);
   const details = useResource<Market>(
-    selectedId ? `/markets/${encodeURIComponent(selectedId)}` : null,
-    15000,
+    route.view === "market" && route.marketId && (exchange === "LIVE" || !!user)
+      ? `/markets/${encodeURIComponent(route.marketId)}`
+      : null,
+    10000,
   );
   const market =
-    details.data?.id === selectedId ? details.data : marketFromList;
+    details.data || allMarkets.find((m) => m.id === route.marketId);
   const outcome =
     market?.outcomes.find((o) => o.id === outcomeId) || market?.outcomes[0];
   const book = useResource<OrderBook>(
-    market && outcome
+    route.view === "market" && market && outcome
       ? `/markets/${encodeURIComponent(market.id)}/book?outcomeId=${encodeURIComponent(outcome.id)}`
       : null,
     2000,
   );
   const positionsResource = useResource<Position[]>(
-    user && (exchange !== "FRIENDS" || groupId) ? `/positions?${scope}` : null,
+    user && (exchange === "LIVE" || groupId) ? `/positions?${scope}` : null,
     5000,
   );
   const ordersResource = useResource<Order[]>(
-    user && (exchange !== "FRIENDS" || groupId) ? `/orders?${scope}` : null,
+    user && (exchange === "LIVE" || groupId) ? `/orders?${scope}` : null,
     5000,
   );
-  const watchlist = useResource<string[]>(user ? "/watchlist" : null, 15000);
-  useEffect(() => {
-    if (watchlist.data) setWatched(watchlist.data);
-  }, [watchlist.data]);
-  const status = useResource<ProviderStatus>("/live/status", 15000);
   const positions = positionsResource.data || [],
     orders = ordersResource.data || [];
   const wallet = bootstrap.data?.wallets.find(
     (w) =>
       w.exchange === exchange && (exchange === "LIVE" || w.groupId === groupId),
   );
+  const operational = useResource<{ tradingEnabled: boolean; reason?: string }>(
+    "/exchange-status",
+    15000,
+  );
+  const tradingEnabled =
+    operational.data?.tradingEnabled === true && !operational.error;
+  const watchlist = useResource<string[]>(user ? "/watchlist" : null, 15000);
+  const visibleMarkets = discoverMarkets(allMarkets, {
+    query,
+    topic,
+    watched,
+    following,
+    sort,
+  });
+  const availableTopics = topics.filter(
+    (item) => item === "All" || allMarkets.some((m) => marketTopic(m) === item),
+  );
+  const unread =
+    bootstrap.data?.notifications.filter((n) => !n.readAt).length || 0;
   const holdingValue = positions.reduce(
     (sum, p) => sum + Number(p.indicativeValue),
     0,
   );
   const pnl = positions.reduce(
-    (sum, p) => sum + Number(p.unrealizedPnl) + Number(p.realizedPnl),
+    (sum, p) => sum + Number(p.realizedPnl) + Number(p.unrealizedPnl),
     0,
   );
-  const unread =
-    bootstrap.data?.notifications.filter((n) => !n.readAt).length || 0;
-  const selectMarket = useCallback((id: string) => {
-    setMarketId(id);
-    setOutcomeId("");
-    setActionError("");
-    savePreference("market", id);
-  }, []);
-  const closeDialog = useCallback(() => setDialog(null), []);
   useEvents(!!user);
   useEffect(() => {
-    if (bootstrap.data && !groups.some((g) => g.id === groupId))
-      setGroupId(bootstrap.data.activeGroupId || groups[0]?.id || "");
-  }, [bootstrap.data, groupId]);
+    if (watchlist.data) setWatched(watchlist.data);
+    else if (!user) setWatched([]);
+  }, [watchlist.data, user?.id]);
+  useEffect(() => {
+    const changed = () => {
+      setRoute(readRoute(location.hash));
+      setMenuOpen(false);
+      setActionError("");
+    };
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  }, []);
+  useEffect(() => {
+    setTopic("All");
+    setQuery("");
+    setFollowing(false);
+    setVisibleCount(18);
+    setOutcomeId("");
+  }, [exchange, groupId]);
+  useEffect(() => {
+    setVisibleCount(18);
+  }, [query, topic, following, provider, sort]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     savePreference("theme", theme);
   }, [theme]);
   useEffect(() => {
-    savePreference("exchange", exchange);
-    setMarketId("");
-    setOutcomeId("");
-    setCategory("all");
-    setWatchOnly(false);
-  }, [exchange, groupId]);
-  useEffect(() => {
-    const timer = setInterval(() => setClock(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setDialog((current) => (current === "search" ? null : "search"));
+        searchRef.current?.focus();
       }
-      if (event.key === "Escape") setExpanded(false);
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    const outside = (event: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node))
+        setMenuOpen(false);
     };
     window.addEventListener("keydown", keydown);
-    return () => window.removeEventListener("keydown", keydown);
+    window.addEventListener("pointerdown", outside);
+    return () => {
+      window.removeEventListener("keydown", keydown);
+      window.removeEventListener("pointerdown", outside);
+    };
   }, []);
-  const toggleWatch = async () => {
-    if (!market) return;
-    const next = watched.includes(market.id)
-      ? watched.filter((id) => id !== market.id)
-      : [...watched, market.id];
-    if (user) {
-      try {
-        const response = await post<{ marketIds: string[] }>(
-          `/markets/${market.id}/watch`,
-        );
-        setWatched(response.marketIds);
-        savePreference("watchlist", JSON.stringify(response.marketIds));
-        watchlist.refresh();
-        return;
-      } catch (reason) {
-        setActionError(errorMessage(reason));
-        return;
-      }
+  const toggleWatch = async (item: Market) => {
+    if (!user) {
+      setDialog("auth");
+      return;
     }
-    setWatched(next);
-    savePreference("watchlist", JSON.stringify(next));
+    try {
+      const response = await post<{ marketIds: string[] }>(
+        `/markets/${encodeURIComponent(item.id)}/watch`,
+      );
+      setWatched(response.marketIds);
+      watchlist.refresh();
+    } catch (reason) {
+      setActionError(errorMessage(reason));
+    }
   };
-  const feed = market?.provider
-    ? status.data?.providers?.[market.provider]
-    : null;
-  const feedReady =
-    exchange === "FRIENDS" || (!!book.data && !book.data.stale && !book.error);
-  const hasFeedError =
-    exchange === "LIVE" &&
-    !!market &&
-    (book.error ||
-      book.data?.stale ||
-      (feed?.state &&
-        !["healthy", "ready", "available", "ok", "connected"].includes(
-          feed.state.toLowerCase(),
-        )));
+  const switchExchange = (next: Exchange) =>
+    navigate({
+      exchange: next,
+      view: "markets",
+      ...(next === "FRIENDS" && groupId ? { groupId } : {}),
+    });
+  const browse = () =>
+    navigate({
+      exchange,
+      groupId: exchange === "FRIENDS" ? groupId : undefined,
+      view: "markets",
+    });
+  const portfolio = () =>
+    navigate({
+      exchange,
+      groupId: exchange === "FRIENDS" ? groupId : undefined,
+      view: "portfolio",
+    });
+  const create = () => setDialog(user ? "create" : "auth");
+  const journal = () => {
+    void downloadJournal().catch((reason) =>
+      setActionError(errorMessage(reason)),
+    );
+  };
+  const inviteAttempt = useRef("");
+  useEffect(() => {
+    if (!bootstrap.data) return;
+    const token = new URLSearchParams(location.search).get("invite");
+    if (!token || inviteAttempt.current === token) return;
+    if (!user) {
+      setDialog("auth");
+      return;
+    }
+    inviteAttempt.current = token;
+    void post<Group>("/invites/redeem", { token })
+      .then((joined) => {
+        refreshAll();
+        const destination = routeHash({
+          exchange: "FRIENDS",
+          groupId: joined.id,
+          view: "markets",
+        });
+        history.replaceState({}, "", `/${destination}`);
+        setRoute(readRoute(destination));
+        closeDialog();
+      })
+      .catch((reason) => setActionError(errorMessage(reason)));
+  }, [user?.id, !!bootstrap.data, closeDialog]);
+  const onAuth = () => {
+    refreshAll();
+    closeDialog();
+  };
   return (
-    <div className={`app-shell ${expanded ? "chart-expanded" : ""}`}>
-      <header className="topbar">
-        <a className="brand" href="/" aria-label="OpenTrader home">
-          <span className="brand-symbol">
-            <i />
-            <b>↗</b>
-          </span>
-          <span>
-            Open<span className="brand-light">Trader</span>
-            <sup>α</sup>
-          </span>
-        </a>
-        <span className="nav-divider" />
-        <nav className="main-nav" aria-label="Exchange">
-          <button
-            className={exchange === "LIVE" ? "active" : ""}
-            onClick={() => setExchange("LIVE")}
-          >
-            <Radio size={13} />
-            Live
-          </button>
-          <button
-            className={exchange === "FRIENDS" ? "active" : ""}
-            onClick={() => setExchange("FRIENDS")}
-          >
-            <Users size={13} />
-            Friends
-          </button>
-        </nav>
-        <span className="nav-divider desktop-only" />
-        <nav className="secondary-nav">
-          <button onClick={() => setDialog("leaderboard")}>
-            <Trophy size={12} />
-            Leaderboard
-          </button>
-          <button onClick={() => setDialog(user ? "groups" : "auth")}>
-            Groups
-          </button>
-        </nav>
-        <div className="topbar-spacer" />
-        <button
-          className="global-search"
-          aria-label="Search markets"
-          onClick={() => setDialog("search")}
-        >
-          <Search size={12} />
-          <span>Search markets</span>
-          <kbd>⌘ K</kbd>
-        </button>
-        <IconButton
-          label={theme === "dark" ? "Use daylight theme" : "Use midnight theme"}
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          className="theme-toggle"
-        >
-          {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-        </IconButton>
-        <IconButton
-          label={`Notifications${unread ? `, ${unread} unread` : ""}`}
-          onClick={() => setDialog(user ? "notifications" : "auth")}
-          className="notification-button"
-        >
-          <Bell size={14} />
-          {unread > 0 && <i />}
-        </IconButton>
-        <div className="header-balance">
-          <WalletIcon size={12} />
-          <span>{user ? credits(wallet?.available, 0) : "—"}</span>
-          <small>CR</small>
-        </div>
-        <button
-          className={`profile-button ${user ? "signed-in" : ""}`}
-          aria-label={user ? `Account for ${user.handle}` : "Sign in"}
-          onClick={() => setDialog(user ? "profile" : "auth")}
-        >
-          {user ? (
-            <>
-              <span className="avatar-tiny">
-                {user.handle[0]?.toUpperCase()}
-              </span>
-              <span>@{user.handle}</span>
-              <ChevronDown size={11} />
-            </>
-          ) : (
-            <>
-              Sign in <ArrowUpRight size={12} />
-            </>
-          )}
-        </button>
-      </header>
-      <div className="market-ribbon">
-        <div className="ribbon-label">
-          <i className="tiny-dot" />
-          {exchange === "LIVE" ? "LIVE MARKETS" : "GROUP MARKETS"}
-        </div>
-        <div className="ticker-scroll">
-          {visibleMarkets.slice(0, 24).map((m, i) => (
+    <div className="app-shell">
+      <a
+        className="skip-link"
+        href="#main-content"
+        onClick={(event) => {
+          event.preventDefault();
+          document.getElementById("main-content")?.focus();
+        }}
+      >
+        Skip to content
+      </a>
+      <header className="site-header">
+        <div className="header-inner">
+          <a href="#/live" className="wordmark" aria-label="OpenTrader home">
+            OpenTrader<span className="wordmark-point">.</span>
+          </a>
+          <nav className="exchange-switch" aria-label="Exchange">
             <button
-              key={m.id}
-              className={`ticker-item ${market?.id === m.id ? "selected" : ""}`}
-              onClick={() => selectMarket(m.id)}
-              title={m.question}
+              className={exchange === "LIVE" ? "active" : ""}
+              aria-pressed={exchange === "LIVE"}
+              onClick={() => switchExchange("LIVE")}
             >
-              <span className={`ticker-glyph glyph-${i % 5}`}>
-                {m.category?.slice(0, 1) || "↗"}
-              </span>
-              <span className="ticker-question">{m.question}</span>
-              <span className="ticker-probability">
-                {percent(m.outcomes[0]?.probability)}
-              </span>
-              {watched.includes(m.id) && <Star size={9} fill="currentColor" />}
+              Live
             </button>
-          ))}
-          {!visibleMarkets.length && (
-            <span className="ribbon-empty">
-              {marketsResource.loading
-                ? "Connecting to markets…"
-                : exchange === "FRIENDS"
-                  ? "Private questions. Shared conviction."
-                  : "Waiting for verified market sources"}
-            </span>
-          )}
-        </div>
-        <IconButton
-          label="Browse all markets"
-          onClick={() => setDialog("search")}
-        >
-          <Layers3 size={13} />
-        </IconButton>
-      </div>
-      <div className="market-filterbar">
-        <div className="market-breadcrumb">
-          <span className={exchange === "LIVE" ? "live-icon" : "friends-icon"}>
-            {exchange === "LIVE" ? <Globe2 size={12} /> : <Users size={12} />}
-          </span>
-          <strong>
-            {exchange === "LIVE" ? "Live simulator" : "Friends exchange"}
-          </strong>
-          <span className="breadcrumb-slash">/</span>
-          {exchange === "FRIENDS" ? (
-            <Select
-              label="Active Friends group"
-              value={groupId}
-              onChange={setGroupId}
+            <button
+              className={exchange === "FRIENDS" ? "active" : ""}
+              aria-pressed={exchange === "FRIENDS"}
+              onClick={() => switchExchange("FRIENDS")}
             >
-              <option value="">Choose group</option>
-              {groups.map((g) => (
-                <option value={g.id} key={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </Select>
-          ) : (
-            <span className="muted">Global markets, your perspective.</span>
-          )}
-        </div>
-        <div className="market-filter-controls">
-          <Select
-            label="Market category"
-            value={category}
-            onChange={setCategory}
-          >
-            <option value="all">All categories</option>
-            {categories.map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </Select>
-          {exchange === "LIVE" && (
-            <Select
-              label="Market provider"
-              value={provider}
-              onChange={(value) => {
-                setProvider(value);
-                setMarketId("");
+              Friends
+            </button>
+          </nav>
+          <nav className="primary-nav" aria-label="Main navigation">
+            <button
+              onClick={browse}
+              className={route.view !== "portfolio" ? "active" : ""}
+            >
+              Markets
+            </button>
+            <button
+              onClick={portfolio}
+              className={route.view === "portfolio" ? "active" : ""}
+            >
+              Portfolio
+            </button>
+          </nav>
+          <label className="header-search">
+            <Search size={17} />
+            <input
+              ref={searchRef}
+              type="search"
+              aria-label="Search markets"
+              placeholder="Search markets"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                if (route.view !== "markets") browse();
               }}
-            >
-              <option value="all">All sources</option>
-              <option value="polymarket">Polymarket</option>
-              <option value="kalshi">Kalshi</option>
-            </Select>
-          )}
-          <button
-            className={`text-button watch-filter ${watchOnly ? "active" : ""}`}
-            onClick={() => setWatchOnly(!watchOnly)}
-          >
-            <Star size={11} fill={watchOnly ? "currentColor" : "none"} />
-            Watchlist<span>{watched.length}</span>
-          </button>
-          {exchange === "FRIENDS" && (
-            <button
-              className="create-market-button"
-              onClick={() => setDialog(user ? "create" : "auth")}
-            >
-              <Plus size={12} />
-              Create market
-            </button>
-          )}
-          {exchange === "FRIENDS" && user && market && (
-            <IconButton
-              label="Report market"
-              onClick={() => setDialog("report")}
-            >
-              <Flag size={13} />
-            </IconButton>
-          )}
-          {exchange === "FRIENDS" &&
-            group &&
-            ["OWNER", "MODERATOR"].includes(group.role) && (
-              <IconButton
-                label="Group moderation queue"
-                onClick={() => setDialog("moderation")}
-              >
-                <ShieldCheck size={14} />
-              </IconButton>
-            )}
-        </div>
-      </div>
-      <section className="market-overview">
-        <div className="market-identity">
-          <button
-            className="selected-market-glyph"
-            onClick={() => setDialog("search")}
-            aria-label="Select market"
-          >
-            {market?.category?.[0] || <Activity size={20} />}
-          </button>
-          <div>
-            <div className="market-title-row">
-              <button
-                className="market-title"
-                onClick={() => setDialog("search")}
-              >
-                {market?.question ||
-                  (exchange === "FRIENDS"
-                    ? "Your group. Your predictions."
-                    : "Find the signal. Take a position.")}
-                <ChevronDown size={12} />
-              </button>
-              <IconButton
-                label={
-                  watched.includes(market?.id || "")
-                    ? "Remove market from watchlist"
-                    : "Add market to watchlist"
-                }
-                disabled={!market}
-                onClick={() => void toggleWatch()}
-                className={watched.includes(market?.id || "") ? "watched" : ""}
-              >
-                <Star
-                  size={12}
-                  fill={
-                    watched.includes(market?.id || "") ? "currentColor" : "none"
-                  }
-                />
-              </IconButton>
-            </div>
-            <div className="market-meta">
-              <span>
-                {market?.provider
-                  ? market.provider.toUpperCase()
-                  : exchange === "FRIENDS"
-                    ? group?.name || "PRIVATE GROUP"
-                    : "PREDICTION EXCHANGE"}
-              </span>
-              <span>·</span>
-              <span>{market?.category || "Fictional credits"}</span>
-              {market && (
-                <>
-                  <span>·</span>
-                  <Badge tone={market.status === "OPEN" ? "green" : "quiet"}>
-                    {market.status.replaceAll("_", " ")}
-                  </Badge>
-                </>
-              )}
-              {market?.sourceUrl && (
-                <a
-                  href={market.sourceUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label="View original market source"
-                >
-                  <ExternalLink size={10} />
-                </a>
-              )}
-            </div>
-          </div>
-        </div>
-        <div className="market-stats">
-          <div className="stat primary-stat">
-            <span>{outcome?.label || "YES"} probability</span>
-            <strong>{percent(outcome?.probability)}</strong>
-          </div>
-          <div className="stat">
-            <span>Price / share</span>
-            <strong>{cents(outcome?.probability)}</strong>
-          </div>
-          <div className="stat">
-            <span>
-              {exchange === "LIVE"
-                ? market?.provider === "kalshi"
-                  ? "Source volume · contracts"
-                  : "Source volume · USD"
-                : "Traded · CR"}
-            </span>
-            <strong>
-              {market
-                ? exchange === "LIVE"
-                  ? `${market.provider === "kalshi" ? "" : "$"}${compact(market.volume)}`
-                  : compact(market.volume)
-                : "—"}
-            </strong>
-          </div>
-          <div className="stat">
-            <span>Closes</span>
-            <strong>
-              {market
-                ? new Date(market.closeAt).toLocaleDateString([], {
-                    month: "short",
-                    day: "numeric",
-                  })
-                : "—"}
-            </strong>
-          </div>
-          <div className="stat account-stat">
-            <span>Holdings · CR</span>
-            <strong>{user ? credits(holdingValue) : "—"}</strong>
-          </div>
-          <div className="stat account-stat">
-            <span>P&L · CR</span>
-            <strong
-              className={user ? (pnl >= 0 ? "positive" : "negative") : ""}
-            >
-              {user ? `${pnl > 0 ? "+" : ""}${credits(pnl)}` : "—"}
-            </strong>
-          </div>
-        </div>
-      </section>
-      {(bootstrap.error ||
-        marketsResource.error ||
-        actionError ||
-        (hasFeedError && market)) && (
-        <div className="connection-notice">
-          <span className="warning-dot" />
-          {bootstrap.error
-            ? `Server connection: ${bootstrap.error}`
-            : marketsResource.error
-              ? `Market source: ${marketsResource.error}`
-              : actionError ||
-                `Source ${book.data?.stale ? "snapshot is stale" : "connection unavailable"}. Verified data is required before trading.`}
-          <button
-            onClick={() => {
-              setActionError("");
-              refreshAll();
-            }}
-          >
-            Retry <RefreshCw size={10} />
-          </button>
-        </div>
-      )}
-      <main className="terminal-workspace">
-        <div className="terminal-main">
-          <div className="chart-outcome-bar">
-            <div
-              className="outcome-tabs"
-              role="group"
-              aria-label="Chart outcome"
-            >
-              {market?.outcomes.map((o) => (
-                <button
-                  key={o.id}
-                  className={outcome?.id === o.id ? "active" : ""}
-                  onClick={() => setOutcomeId(o.id)}
-                >
-                  <span
-                    className={`outcome-dot ${market.outcomes.indexOf(o) === 1 ? "no" : ""}`}
-                  />
-                  {o.label}
-                  <strong>{cents(o.probability)}</strong>
+            />
+            <kbd>⌘ K</kbd>
+          </label>
+          <div className="header-actions">
+            {user ? (
+              <>
+                <button className="wallet-button" onClick={portfolio}>
+                  <strong>{credits(wallet?.available, 0)}</strong>
+                  <span>play credits</span>
                 </button>
-              )) || <span className="muted">MARKET PROBABILITY</span>}
-            </div>
-            <div className="chart-source-label">
-              <span className={`tiny-dot ${!feedReady ? "offline" : ""}`} />
-              {exchange === "FRIENDS" ? "PRIVATE EXCHANGE" : "LIVE SOURCE"}
-              <span className="control-separator" /> <span>PLAY CREDIT</span>
-            </div>
-          </div>
-          {exchange === "FRIENDS" && !user ? (
-            <div className="friends-empty">
-              <div className="friends-empty-visual">
-                <span />
-                <Users size={28} />
-                <span />
-              </div>
-              <Badge tone="blue">THE PRIVATE EXCHANGE</Badge>
-              <h1>Private group markets</h1>
-              <p>
-                Sign in to select a Friends group and trade with separate
-                fictional credits.
-              </p>
+                <button
+                  className="icon-button notifications-button"
+                  aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`}
+                  onClick={() => setDialog("notifications")}
+                >
+                  <Bell size={18} />
+                  {unread > 0 && <i />}
+                </button>
+                <button
+                  className="account-button"
+                  aria-label={`Account for ${user.handle}`}
+                  onClick={() => setDialog("profile")}
+                >
+                  {user.handle[0]?.toUpperCase()}
+                </button>
+              </>
+            ) : (
               <button
-                className="button primary"
+                className="button primary signup-button"
                 onClick={() => setDialog("auth")}
               >
-                Create your account <ArrowUpRight size={13} />
+                Get started
               </button>
-              <small>10,000 fictional credits. Zero money on the line.</small>
+            )}
+            <div className="menu-container" ref={menuRef}>
+              <button
+                className="icon-button"
+                aria-label="More options"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen(!menuOpen)}
+              >
+                <Menu size={19} />
+              </button>
+              {menuOpen && (
+                <div className="navigation-menu">
+                  <button
+                    onClick={() => {
+                      portfolio();
+                      setMenuOpen(false);
+                    }}
+                  >
+                    Portfolio
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDialog("groups");
+                      setMenuOpen(false);
+                    }}
+                  >
+                    Manage groups
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDialog("leaderboard");
+                      setMenuOpen(false);
+                    }}
+                  >
+                    Leaderboard
+                  </button>
+                  {user && (
+                    <button
+                      onClick={() => {
+                        setDialog("notifications");
+                        setMenuOpen(false);
+                      }}
+                    >
+                      Notifications{unread ? ` (${unread})` : ""}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setTheme(theme === "dark" ? "light" : "dark");
+                      setMenuOpen(false);
+                    }}
+                  >
+                    {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}{" "}
+                    {theme === "dark" ? "Light" : "Dark"} appearance
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDialog("help");
+                      setMenuOpen(false);
+                    }}
+                  >
+                    How it works
+                  </button>
+                </div>
+              )}
             </div>
-          ) : (
-            <MarketChart
-              market={market}
-              outcome={outcome}
-              theme={theme}
-              expanded={expanded}
-              onExpand={() => setExpanded(!expanded)}
-            />
-          )}
-          <MarketTables
-            key={`${exchange}-${groupId}`}
-            tab={tab}
-            setTab={setTab}
-            market={market}
-            outcome={outcome}
-            book={book.data}
-            orders={orders}
-            positions={positions}
-            user={user}
-            group={group}
-            onSignIn={() => setDialog("auth")}
-            onMarket={selectMarket}
-            onJournal={() => {
-              void downloadJournal().catch((reason) =>
-                setActionError(errorMessage(reason)),
-              );
-            }}
-          />
+          </div>
         </div>
-        <TradeTicket
-          market={market}
-          tradingEnabled={tradingEnabled}
-          outcome={outcome}
-          setOutcome={setOutcomeId}
-          wallet={wallet}
-          user={user}
-          book={book.error ? undefined : book.data}
-          positions={positions}
-          onSignIn={() => setDialog("auth")}
-          onOrders={() => setTab("orders")}
-        />
+        {route.view === "markets" && (
+          <nav className="topic-nav" aria-label="Market topics">
+            <div>
+              {availableTopics.map((item) => (
+                <button
+                  key={item}
+                  className={topic === item ? "active" : ""}
+                  aria-pressed={topic === item}
+                  onClick={() => setTopic(item)}
+                >
+                  {item === "All" ? "Explore" : item}
+                </button>
+              ))}
+            </div>
+          </nav>
+        )}
+      </header>
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className={`page-content view-${route.view}`}
+      >
+        {(bootstrap.error || actionError) && (
+          <ErrorNote
+            message={
+              actionError ||
+              `Cannot connect to your account: ${bootstrap.error}`
+            }
+          />
+        )}
+        {operational.data?.tradingEnabled === false && (
+          <div className="notice">
+            Trading is temporarily paused. You can still browse markets and view
+            your account.
+          </div>
+        )}
+        {exchange === "FRIENDS" && user && (
+          <div className="group-context">
+            <label>
+              <Users size={16} />
+              <select
+                aria-label="Active Friends group"
+                value={groupId}
+                onChange={(event) =>
+                  navigate({
+                    exchange: "FRIENDS",
+                    groupId: event.target.value,
+                    view: "markets",
+                  })
+                }
+              >
+                {groups.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={14} />
+            </label>
+            <button className="text-link" onClick={() => setDialog("groups")}>
+              Manage group
+            </button>
+          </div>
+        )}
+        {exchange === "FRIENDS" && !user && !bootstrap.loading ? (
+          <section className="friends-intro">
+            <span className="section-kicker">Just your circle</span>
+            <h1>
+              A market for your
+              <br />
+              group chat.
+            </h1>
+            <p>
+              Ask a question. Make your prediction. See who called it.
+              <br className="desktop-only" /> Your friends, your markets, your
+              own play credits.
+            </p>
+            <button
+              className="button primary"
+              onClick={() => setDialog("auth")}
+            >
+              Start a group <ArrowRight size={16} />
+            </button>
+            <div className="friends-explainer">
+              <div>
+                <span>1</span>
+                <h3>Invite your people</h3>
+                <p>Markets stay private to approved members.</p>
+              </div>
+              <div>
+                <span>2</span>
+                <h3>Make a prediction</h3>
+                <p>Each group has a separate play-credit balance.</p>
+              </div>
+              <div>
+                <span>3</span>
+                <h3>Settle it fairly</h3>
+                <p>Clear rules and an independent resolver.</p>
+              </div>
+            </div>
+          </section>
+        ) : route.view === "markets" ? (
+          <>
+            <div className="page-heading">
+              <div>
+                <h1>
+                  {query
+                    ? `Results for “${query}”`
+                    : following
+                      ? "Your watchlist"
+                      : exchange === "FRIENDS"
+                        ? "Your group’s markets"
+                        : topic !== "All"
+                          ? topic
+                          : "What happens next?"}
+                </h1>
+                <p>
+                  {exchange === "FRIENDS"
+                    ? "Private predictions. A little friendly competition."
+                    : "Real-world questions. Your predictions. All with play credits."}
+                </p>
+              </div>
+              {exchange === "FRIENDS" && user && (
+                <button className="button primary" onClick={create}>
+                  <Plus size={16} />
+                  Create market
+                </button>
+              )}
+            </div>
+            <div className="discovery-toolbar">
+              <div className="browse-tabs">
+                <button
+                  className={!following ? "active" : ""}
+                  onClick={() => setFollowing(false)}
+                >
+                  Discover
+                </button>
+                <button
+                  className={following ? "active" : ""}
+                  onClick={() => setFollowing(true)}
+                >
+                  <Bookmark size={15} />
+                  Following{watched.length > 0 && <span>{watched.length}</span>}
+                </button>
+              </div>
+              <div className="browse-selects">
+                {exchange === "LIVE" && (
+                  <select
+                    aria-label="Market provider"
+                    value={provider}
+                    onChange={(event) => setProvider(event.target.value)}
+                  >
+                    <option value="all">All sources</option>
+                    <option value="polymarket">Polymarket</option>
+                    <option value="kalshi">Kalshi</option>
+                  </select>
+                )}
+                <select
+                  aria-label="Sort markets"
+                  value={sort}
+                  onChange={(event) =>
+                    setSort(event.target.value as MarketSort)
+                  }
+                >
+                  <option value="discover">Default order</option>
+                  <option value="closing">Closing soon</option>
+                  <option value="newest">Newest</option>
+                </select>
+              </div>
+            </div>
+            {marketsResource.loading && !allMarkets.length ? (
+              <div
+                className="market-grid"
+                aria-label="Loading markets"
+                aria-busy="true"
+              >
+                {Array.from({ length: 6 }, (_, i) => (
+                  <div className="card-skeleton" key={i}>
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                ))}
+              </div>
+            ) : marketsResource.error ? (
+              <Empty
+                title="Markets are temporarily unavailable"
+                detail={marketsResource.error}
+                action={
+                  <button className="button" onClick={refreshAll}>
+                    Try again
+                  </button>
+                }
+              />
+            ) : visibleMarkets.length ? (
+              <>
+                <div className="market-grid">
+                  {visibleMarkets.slice(0, visibleCount).map((item) => (
+                    <MarketCard
+                      key={item.id}
+                      market={item}
+                      saved={watched.includes(item.id)}
+                      onOpen={openMarket}
+                      onSave={(item) => void toggleWatch(item)}
+                    />
+                  ))}
+                </div>
+                {visibleMarkets.length > visibleCount && (
+                  <div className="load-more">
+                    <button
+                      className="button"
+                      onClick={() => setVisibleCount((count) => count + 18)}
+                    >
+                      Show more markets
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <Empty
+                title={
+                  following
+                    ? "Keep an eye on a question"
+                    : query || topic !== "All"
+                      ? "No matching markets"
+                      : exchange === "FRIENDS"
+                        ? "Your first question starts here"
+                        : "No markets available"
+                }
+                detail={
+                  following
+                    ? "Save a market to find it here."
+                    : exchange === "FRIENDS" && !query
+                      ? "Create a question with clear rules, then invite your friends to predict the outcome."
+                      : "Try another topic or search."
+                }
+                action={
+                  exchange === "FRIENDS" && !following && !query ? (
+                    <button className="button primary" onClick={create}>
+                      Create a market
+                    </button>
+                  ) : (
+                    <button
+                      className="button"
+                      onClick={() => {
+                        setTopic("All");
+                        setQuery("");
+                        setFollowing(false);
+                      }}
+                    >
+                      Browse markets
+                    </button>
+                  )
+                }
+              />
+            )}
+          </>
+        ) : route.view === "portfolio" ? (
+          <>
+            <div className="page-heading">
+              <div>
+                <h1>Your portfolio</h1>
+                <p>
+                  {exchange === "LIVE"
+                    ? "Your Live practice account"
+                    : `${group?.name || "Friends"} · Separate group balance`}
+                </p>
+              </div>
+              {user && (
+                <button className="button" onClick={journal}>
+                  Export history
+                </button>
+              )}
+            </div>
+            {!user ? (
+              <Empty
+                title="Your predictions, in one place"
+                detail="Sign in to see your holdings and play-credit balance."
+                action={
+                  <button
+                    className="button primary"
+                    onClick={() => setDialog("auth")}
+                  >
+                    Sign in
+                  </button>
+                }
+              />
+            ) : (
+              <>
+                <div className="portfolio-summary">
+                  <div>
+                    <span>Available credits</span>
+                    <strong>{credits(wallet?.available)}</strong>
+                  </div>
+                  <div>
+                    <span>Held for orders</span>
+                    <strong>{credits(wallet?.locked)}</strong>
+                  </div>
+                  <div>
+                    <span>Positions · indicative</span>
+                    <strong>{credits(holdingValue)}</strong>
+                  </div>
+                  <div>
+                    <span>Total profit / loss</span>
+                    <strong className={pnl < 0 ? "negative" : "positive"}>
+                      {pnl > 0 ? "+" : ""}
+                      {credits(pnl)}
+                    </strong>
+                  </div>
+                </div>
+                <ErrorNote
+                  message={positionsResource.error || ordersResource.error}
+                />
+                <MarketTables
+                  tab={portfolioTab}
+                  setTab={setPortfolioTab}
+                  tabs={["positions", "orders"]}
+                  orders={orders}
+                  positions={positions}
+                  user={user}
+                  group={group}
+                  onSignIn={() => setDialog("auth")}
+                  onMarket={selectMarket}
+                  onJournal={journal}
+                />
+                <p className="quiet-note">
+                  All amounts are fictional credits. Indicative values may
+                  differ from the amount you can sell for.
+                </p>
+              </>
+            )}
+          </>
+        ) : !market ? (
+          <>
+            {details.loading ? (
+              <div className="page-loading">
+                <Loading>Loading market…</Loading>
+              </div>
+            ) : (
+              <Empty
+                title="This market isn’t available"
+                detail={
+                  details.error ||
+                  "It may be private, removed, or temporarily unavailable."
+                }
+                action={
+                  <button className="button" onClick={browse}>
+                    Back to markets
+                  </button>
+                }
+              />
+            )}
+          </>
+        ) : (
+          <>
+            <button className="back-link" onClick={browse}>
+              <ArrowLeft size={16} />
+              All markets<span>/</span>
+              {marketTopic(market)}
+            </button>
+            <div className="market-detail-layout">
+              <div className="market-detail-main">
+                <div className="detail-heading">
+                  <div>
+                    <div className="detail-meta">
+                      <span>
+                        {market.provider === "polymarket"
+                          ? "Polymarket"
+                          : market.provider === "kalshi"
+                            ? "Kalshi"
+                            : group?.name || "Friends"}
+                      </span>
+                      <span>
+                        Closes{" "}
+                        {new Date(market.closeAt).toLocaleDateString(
+                          undefined,
+                          { month: "short", day: "numeric", year: "numeric" },
+                        )}
+                      </span>
+                      {market.status !== "OPEN" && (
+                        <span className="market-state">
+                          {market.status.replaceAll("_", " ").toLowerCase()}
+                        </span>
+                      )}
+                    </div>
+                    <h1>{market.question}</h1>
+                  </div>
+                  <button
+                    className={`icon-button ${watched.includes(market.id) ? "saved" : ""}`}
+                    aria-label={`${watched.includes(market.id) ? "Unsave" : "Save"} market`}
+                    onClick={() => void toggleWatch(market)}
+                  >
+                    <Bookmark
+                      size={19}
+                      fill={
+                        watched.includes(market.id) ? "currentColor" : "none"
+                      }
+                    />
+                  </button>
+                </div>
+                <div className="detail-probability">
+                  <strong>{outcome ? chance(outcome.probability) : "—"}</strong>
+                  <span>
+                    {outcome?.label.toLowerCase() === "yes"
+                      ? "chance of Yes"
+                      : outcome?.label}
+                  </span>
+                </div>
+                <div className="detail-outcomes" aria-label="Chart outcome">
+                  {market.outcomes.map((item) => (
+                    <button
+                      key={item.id}
+                      aria-pressed={item.id === outcome?.id}
+                      className={item.id === outcome?.id ? "active" : ""}
+                      onClick={() => setOutcomeId(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                <ChartBoundary>
+                  <Suspense
+                    fallback={
+                      <div className="chart-loading">
+                        <Loading>Loading chart…</Loading>
+                      </div>
+                    }
+                  >
+                    <MarketChart
+                      market={market}
+                      outcome={outcome}
+                      theme={theme}
+                    />
+                  </Suspense>
+                </ChartBoundary>
+                <MarketTables
+                  tab={tab}
+                  setTab={setTab}
+                  tabs={["rules", "discussion", "activity", "forecast", "book"]}
+                  market={market}
+                  outcome={outcome}
+                  book={book.data}
+                  orders={orders}
+                  positions={positions}
+                  user={user}
+                  group={group}
+                  onSignIn={() => setDialog("auth")}
+                  onMarket={selectMarket}
+                  onJournal={journal}
+                />
+                <div className="detail-actions">
+                  {market.sourceUrl && (
+                    <a href={market.sourceUrl} target="_blank" rel="noreferrer">
+                      View original source
+                      <ExternalLink size={14} />
+                    </a>
+                  )}
+                  {exchange === "FRIENDS" && user && (
+                    <button onClick={() => setDialog("report")}>
+                      <Flag size={14} />
+                      Report market
+                    </button>
+                  )}
+                  {exchange === "FRIENDS" &&
+                    group &&
+                    ["OWNER", "MODERATOR"].includes(group.role) && (
+                      <button onClick={() => setDialog("moderation")}>
+                        <ShieldCheck size={14} />
+                        Moderation
+                      </button>
+                    )}
+                </div>
+              </div>
+              <TradeTicket
+                market={market}
+                tradingEnabled={tradingEnabled}
+                outcome={outcome}
+                setOutcome={setOutcomeId}
+                wallet={wallet}
+                user={user}
+                book={book.error ? undefined : book.data}
+                bookError={book.error}
+                onRefreshBook={book.refresh}
+                positions={positions}
+                onSignIn={() => setDialog("auth")}
+                onOrders={() => {
+                  setPortfolioTab("orders");
+                  portfolio();
+                }}
+              />
+            </div>
+            <div className="mobile-predict">
+              <span>
+                {outcome?.label}
+                <strong>{outcome ? chance(outcome.probability) : ""}</strong>
+              </span>
+              <button
+                className="button primary"
+                onClick={() =>
+                  document
+                    .querySelector(".trade-ticket")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+              >
+                Make a prediction
+                <ArrowRight size={16} />
+              </button>
+            </div>
+          </>
+        )}
       </main>
-      <div className="mobile-trade-launch">
-        <div>
-          <strong>
-            {outcome?.label || "Prediction market"}{" "}
-            <span>{cents(outcome?.probability)}</span>
-          </strong>
-          <small>PLAY CREDIT · NO CASH VALUE</small>
-        </div>
-        <button
-          onClick={() => {
-            if (!user) setDialog("auth");
-            else
-              document
-                .querySelector(".trade-ticket")
-                ?.scrollIntoView({ behavior: "smooth", block: "start" });
-          }}
-        >
-          {user ? "Trade market" : "Sign in to trade"}
-          <ArrowUpRight size={13} />
-        </button>
-      </div>
-      <footer className="statusbar">
-        <div>
-          <span
-            className={`status-indicator ${bootstrap.error ? "offline" : ""}`}
-          />
-          {bootstrap.error
-            ? "Connection interrupted"
-            : !tradingEnabled
-              ? "Trading paused · read-only"
-              : bootstrap.loading && !bootstrap.data
-                ? "Connecting"
-                : "Operational"}
-          <span className="status-separator" />v
-          {bootstrap.data?.settings.version || "0.1.0"}
-          <span className="status-separator" />
-          <span className="status-credit">PLAY CREDIT · NO CASH VALUE</span>
-        </div>
-        <div>
-          <a
-            href="https://www.tradingview.com/"
-            target="_blank"
-            rel="noreferrer"
-            className="chart-attribution"
+      {route.view !== "market" && (
+        <nav className="mobile-navigation" aria-label="Mobile navigation">
+          <button
+            className={route.view === "markets" ? "active" : ""}
+            onClick={browse}
           >
-            Charts by TradingView
-          </a>
-          <span className="status-separator" />
-          <button onClick={() => setDialog("help")}>
-            How it works <CircleHelp size={10} />
+            Markets
           </button>
-          <span className="status-separator" />
-          <time>{clock.toLocaleTimeString([], { hour12: false })}</time>
-          <span className="timezone">
-            {Intl.DateTimeFormat()
-              .resolvedOptions()
-              .timeZone.split("/")
-              .pop()
-              ?.replace("_", " ")}
-          </span>
-        </div>
+          <button
+            className={route.view === "portfolio" ? "active" : ""}
+            onClick={portfolio}
+          >
+            Portfolio
+          </button>
+          <button onClick={() => setDialog("groups")}>Groups</button>
+        </nav>
+      )}
+      <footer className="site-footer">
+        <span>Play credits. No cash value.</span>
+        <button onClick={() => setDialog("help")}>How it works</button>
+        {(allMarkets.length > 0 || market) && (
+          <span className="footer-updates">Prices update automatically</span>
+        )}
       </footer>
       {dialog === "auth" && (
-        <AuthDialog
-          onClose={closeDialog}
-          onAuth={() => {
-            refreshAll();
-            closeDialog();
-            const invite = new URLSearchParams(location.search).get("invite");
-            if (invite) {
-              void post("/invites/redeem", { token: invite })
-                .then(() => {
-                  refreshAll();
-                  setExchange("FRIENDS");
-                  setDialog("groups");
-                  history.replaceState({}, "", "/");
-                })
-                .catch((reason) => setActionError(errorMessage(reason)));
-            }
-          }}
-        />
-      )}
-      {dialog === "search" && (
-        <MarketSearch
-          markets={allMarkets}
-          loading={marketsResource.loading}
-          error={marketsResource.error}
-          selected={market?.id}
-          onSelect={selectMarket}
-          onClose={closeDialog}
-        />
+        <AuthDialog onClose={closeDialog} onAuth={onAuth} />
       )}
       {dialog === "groups" && (
         <GroupsDialog
           groups={groups}
           activeId={groupId}
           user={user}
-          onSelect={(id) => {
-            setGroupId(id);
-            setExchange("FRIENDS");
-          }}
+          onSelect={(id) =>
+            navigate({ exchange: "FRIENDS", groupId: id, view: "markets" })
+          }
           onClose={closeDialog}
         />
-      )}
-      {dialog === "report" && market && (
-        <ReportDialog market={market} onClose={closeDialog} />
-      )}
-      {dialog === "moderation" && group && (
-        <ModerationDialog group={group} onClose={closeDialog} />
       )}
       {dialog === "create" && user && (
         <CreateMarketDialog
@@ -881,58 +1081,46 @@ export default function App() {
           onClose={closeDialog}
           onSignOut={() => {
             closeDialog();
-            setGroupId("");
-            setMarketId("");
-            setExchange("LIVE");
+            refreshAll();
+            navigate({ exchange: "LIVE", view: "markets" });
           }}
         />
       )}
+      {dialog === "report" && market && (
+        <ReportDialog market={market} onClose={closeDialog} />
+      )}
+      {dialog === "moderation" && group && (
+        <ModerationDialog group={group} onClose={closeDialog} />
+      )}
       {dialog === "help" && (
-        <Modal
-          title="Conviction meets consequence."
-          eyebrow="HOW OPENTRADER WORKS"
-          onClose={closeDialog}
-        >
+        <Modal title="How predictions work" onClose={closeDialog}>
           <div className="modal-body help-body">
-            <div>
-              <Badge tone="blue">01</Badge>
-              <h3>Read the question. Read the rules.</h3>
+            <section>
+              <h3>Pick a question and an outcome</h3>
               <p>
-                Each share pays 1 fictional credit if its outcome wins, and 0 if
-                it loses. A 62¢ price implies about a 62% chance.
+                A price of 60¢ implies roughly a 60% chance. Each winning share
+                pays one play credit; a losing share pays zero.
               </p>
-            </div>
-            <div>
-              <Badge tone="blue">02</Badge>
-              <h3>Two exchanges. Separate credits.</h3>
+            </section>
+            <section>
+              <h3>Review before you confirm</h3>
               <p>
-                Live simulates orders against real public market depth. Friends
-                is a private exchange with peer orders and a funded automated
-                market maker. Each wallet starts independently; no credit moves
-                between them.
+                Choose your number of shares, preview the actual cost, then
+                confirm. Prices may move. A new quote is required if the old one
+                expires.
               </p>
-            </div>
-            <div>
-              <Badge tone="blue">03</Badge>
-              <h3>Preview. Protect. Confirm.</h3>
+            </section>
+            <section>
+              <h3>Two modes, separate balances</h3>
               <p>
-                Review a fresh quote before submitting. Market orders fill
-                available shares immediately; limit orders can rest until
-                filled, canceled, or expired. Stale sources pause trading.
+                Live simulates trades against real Polymarket and Kalshi data.
+                Friends has private questions and its own prices. Credits never
+                move between them.
               </p>
-            </div>
-            <div>
-              <Badge tone="blue">04</Badge>
-              <h3>Forecasts are a different skill.</h3>
-              <p>
-                Record a probability without making a trade. Forecast
-                calibration and trading profit have separate leaderboards.
-              </p>
-            </div>
+            </section>
             <p className="form-footnote">
-              All credit is fictional. Nothing here is a real-money wager,
-              investment, or promise of returns. Source availability and local
-              server uptime affect the experience.
+              Credits are free, fictional, and cannot be redeemed. Market prices
+              are estimates, not guaranteed outcomes.
             </p>
           </div>
         </Modal>

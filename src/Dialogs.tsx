@@ -4,10 +4,8 @@ import {
   ArrowRight,
   Check,
   Copy,
-  ExternalLink,
   KeyRound,
   LogOut,
-  Plus,
   Shield,
   Users,
 } from "lucide-react";
@@ -46,8 +44,8 @@ export function AuthDialog({
   const [mode, setMode] = useState<"login" | "register">("login");
   return (
     <Modal
-      title={mode === "login" ? "Welcome back." : "Your edge starts here."}
-      eyebrow="OPENTRADER ACCOUNT"
+      title={mode === "login" ? "Sign in" : "Create your account"}
+      eyebrow="OpenTrader"
       onClose={onClose}
     >
       <div className="modal-body">
@@ -89,7 +87,7 @@ export function AuthDialog({
               required
               minLength={3}
               maxLength={30}
-              pattern="[a-zA-Z][a-zA-Z0-9_-]{2,29}"
+              pattern={"[a-zA-Z][a-zA-Z0-9_\\-]{2,29}"}
               title="Start with a letter; use 3–30 letters, digits, underscores, or hyphens"
             />
           </Field>
@@ -326,7 +324,7 @@ export function GroupsDialog({
   };
   return (
     <Modal
-      title="Better with a little rivalry."
+      title="Your groups"
       eyebrow="FRIENDS EXCHANGE"
       onClose={onClose}
       wide
@@ -1197,7 +1195,7 @@ export function ProfileDialog({
         )}
         {tab === "settings" && (
           <>
-            <Field label="Terminal theme">
+            <Field label="Appearance">
               <Select value={theme} onChange={setTheme} label="Theme">
                 <option value="dark">Midnight</option>
                 <option value="light">Daylight</option>
@@ -1244,7 +1242,7 @@ export function ProfileDialog({
             <div className="journal-icon">
               <ArrowDownToLine size={26} />
             </div>
-            <h3 className="center">Every credit. Accounted for.</h3>
+            <h3 className="center">Your account history</h3>
             <p className="dialog-intro center">
               Download your personal accounting journal for an inspectable
               record of activity across your isolated wallets.

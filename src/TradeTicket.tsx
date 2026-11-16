@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowDownUp,
   ArrowRight,
   Check,
   ChevronDown,
@@ -36,6 +35,8 @@ export function TradeTicket({
   onSignIn,
   onOrders,
   tradingEnabled = true,
+  bookError,
+  onRefreshBook,
 }: {
   market?: Market;
   outcome?: Outcome;
@@ -47,6 +48,8 @@ export function TradeTicket({
   onSignIn: () => void;
   onOrders: () => void;
   tradingEnabled?: boolean;
+  bookError?: string;
+  onRefreshBook?: () => void;
 }) {
   const [side, setSide] = useState<Side>("BUY"),
     [mode, setMode] = useState<"IOC" | "GTC" | "GTD">("IOC");
@@ -81,6 +84,12 @@ export function TradeTicket({
   }, [quantity, price, cap, expires]);
   const amount = Number(quantity),
     limit = Number(price) / 100;
+  const hasMarketHoldings = positions.some(
+    (p) => p.marketId === market?.id && p.quantity > 0,
+  );
+  useEffect(() => {
+    if (!hasMarketHoldings && !uncertain) setSide("BUY");
+  }, [hasMarketHoldings, uncertain]);
   const position = positions.find(
     (p) => p.marketId === market?.id && p.outcomeId === outcome?.id,
   );
@@ -93,7 +102,8 @@ export function TradeTicket({
     (market?.exchange === "LIVE" &&
       !!book &&
       now - new Date(book.timestamp).getTime() > 5000);
-  const isOpen = market?.status === "OPEN";
+  const isOpen =
+    market?.status === "OPEN" && new Date(market.closeAt).getTime() > now;
   const valid =
     Number.isSafeInteger(amount) &&
     amount > 0 &&
@@ -218,51 +228,43 @@ export function TradeTicket({
   return (
     <aside className="trade-ticket" aria-label="Order ticket">
       <header className="ticket-header">
-        <span>ORDER TICKET</span>
-        <Badge tone="blue">PLAY CREDIT</Badge>
+        <h2>Make a prediction</h2>
       </header>
       <div className="ticket-content">
-        <div className="ticket-mode">
-          <button
-            className={mode === "IOC" ? "selected" : ""}
-            disabled={uncertain || busy}
-            onClick={() => setMode("IOC")}
-          >
-            Market
-          </button>
-          <button
-            className={mode !== "IOC" ? "selected" : ""}
-            disabled={uncertain || busy || market?.exchange === "LIVE"}
-            title={
-              market?.exchange === "LIVE"
-                ? "Live simulation supports protected immediate orders; resting limits are available in Friends."
-                : undefined
-            }
-            onClick={() => setMode("GTC")}
-          >
-            Limit order
-          </button>
+        {hasMarketHoldings && (
+          <div className={`side-switch ${side.toLowerCase()}`}>
+            <button
+              disabled={uncertain || busy}
+              onClick={() => setSide("BUY")}
+              className={side === "BUY" ? "selected" : ""}
+            >
+              Buy
+            </button>
+            <button
+              disabled={uncertain || busy}
+              onClick={() => setSide("SELL")}
+              className={side === "SELL" ? "selected" : ""}
+            >
+              Sell
+            </button>
+          </div>
+        )}
+        <label className="ticket-label">Choose your outcome</label>
+        <div className="ticket-outcomes">
+          {market?.outcomes.map((item, i) => (
+            <button
+              key={item.id}
+              disabled={uncertain || busy}
+              aria-pressed={outcome?.id === item.id}
+              className={`${i === 1 ? "no" : "yes"} ${outcome?.id === item.id ? "selected" : ""}`}
+              onClick={() => setOutcome(item.id)}
+            >
+              <span>{item.label}</span>
+              <strong>{cents(item.probability)}</strong>
+            </button>
+          ))}
         </div>
-        <div className={`side-switch ${side.toLowerCase()}`}>
-          <button
-            disabled={uncertain || busy}
-            onClick={() => setSide("BUY")}
-            className={side === "BUY" ? "selected" : ""}
-          >
-            Buy
-          </button>
-          <button
-            disabled={uncertain || busy}
-            onClick={() => setSide("SELL")}
-            className={side === "SELL" ? "selected" : ""}
-          >
-            Sell
-          </button>
-        </div>
-        <label className="ticket-label">
-          Outcome<span>{outcome ? percent(outcome.probability) : "—"}</span>
-        </label>
-        <div className="outcome-select">
+        <div className="outcome-select" hidden>
           <select
             aria-label="Trade outcome"
             value={outcome?.id || ""}
@@ -278,7 +280,7 @@ export function TradeTicket({
           <ChevronDown size={13} />
         </div>
         <label className="ticket-label" htmlFor="order-quantity">
-          Shares<span>1–1,000 whole shares</span>
+          Number of shares<span>1–1,000</span>
         </label>
         <div className="ticket-input">
           <input
@@ -292,7 +294,7 @@ export function TradeTicket({
             value={quantity}
             onChange={(event) => setQuantity(event.target.value)}
           />
-          <span>SHARES</span>
+          <span>shares</span>
         </div>
         <div className="quick-sizes">
           {[10, 50, 100].map((size) => (
@@ -328,84 +330,9 @@ export function TradeTicket({
             Max
           </button>
         </div>
-        {mode !== "IOC" && (
-          <>
-            <label className="ticket-label" htmlFor="limit-price">
-              Limit price<span>0.01–99.99¢</span>
-            </label>
-            <div className="ticket-input">
-              <input
-                id="limit-price"
-                type="number"
-                min="0.01"
-                max="99.99"
-                step="0.01"
-                disabled={uncertain || busy}
-                value={price}
-                onChange={(event) => setPrice(event.target.value)}
-              />
-              <span>¢</span>
-            </div>
-            <label className="ticket-label" htmlFor="time-in-force">
-              Time in force
-            </label>
-            <select
-              className="ticket-select"
-              id="time-in-force"
-              disabled={uncertain || busy}
-              value={mode}
-              onChange={(event) => setMode(event.target.value as "GTC" | "GTD")}
-            >
-              <option value="GTC">Good until canceled</option>
-              <option value="GTD">Good until date</option>
-            </select>
-            {mode === "GTD" && (
-              <input
-                className="ticket-select"
-                aria-label="Order expiry"
-                disabled={uncertain || busy}
-                type="datetime-local"
-                value={expires}
-                onChange={(event) => setExpires(event.target.value)}
-              />
-            )}
-          </>
-        )}
-        <details className="trade-protection">
-          <summary>
-            <ShieldCheck size={12} />
-            Price protection
-            <ChevronDown size={12} />
-          </summary>
-          <label className="ticket-label" htmlFor="order-cap">
-            {side === "BUY"
-              ? "Maximum total spend"
-              : "Minimum immediate proceeds"}
-            <span>Optional</span>
-          </label>
-          <div className="ticket-input">
-            <input
-              id="order-cap"
-              disabled={uncertain || busy}
-              type="number"
-              min="0.01"
-              step="0.01"
-              placeholder="No additional cap"
-              value={cap}
-              onChange={(event) => setCap(event.target.value)}
-            />
-            <span>CR</span>
-          </div>
-          <p>
-            Immediate orders protect average fill price within 1% of the quote,
-            subject to microcredit rounding, and require the quoted minimum
-            share count. Limit orders use your entered price. Tighter credit
-            caps still apply. Unfilled immediate shares are canceled.
-          </p>
-        </details>
         <div className="trade-estimate">
           <div>
-            <span>Indicative {side === "BUY" ? "cost" : "proceeds"}</span>
+            <span>Estimated {side === "BUY" ? "cost" : "proceeds"}</span>
             <strong>
               {valid && market ? credits(estimate) : "—"} <small>CR</small>
             </strong>
@@ -421,8 +348,12 @@ export function TradeTicket({
             </span>
           </div>
           <div>
-            <span>Settlement per winning share</span>
-            <span>1.00 CR</span>
+            <span>
+              {side === "BUY"
+                ? "Payout if you’re right"
+                : "Payout per winning share"}
+            </span>
+            <span>{side === "BUY" ? credits(amount, 0) : "1"} credits</span>
           </div>
         </div>
         <ErrorNote message={error} />
@@ -452,12 +383,24 @@ export function TradeTicket({
         {stale && (
           <div className="warning-note">
             <Info size={13} />
-            Source depth is stale. Trading is paused.
+            Waiting for a fresh source price. Trading will resume automatically.
+          </div>
+        )}
+        {user && !book && isOpen && (
+          <div className="warning-note">
+            {bookError || "Getting the latest price…"}
+            {bookError && onRefreshBook && (
+              <button className="inline-link" onClick={onRefreshBook}>
+                Retry
+              </button>
+            )}
           </div>
         )}
         {market && !isOpen && (
           <div className="warning-note">
-            Market is {market.status.toLowerCase().replaceAll("_", " ")}.
+            {market.status === "OPEN"
+              ? "Trading has closed for this market."
+              : `Market is ${market.status.toLowerCase().replaceAll("_", " ")}.`}
           </div>
         )}
         <div className="trade-submit-wrap">
@@ -486,8 +429,8 @@ export function TradeTicket({
               </>
             ) : (
               <>
-                {side === "BUY" ? "Buy" : "Sell"} {outcome?.label || "shares"}
-                <ArrowRight size={14} />
+                {side === "BUY" ? "Review prediction" : "Review sale"}
+                <ArrowRight size={16} />
               </>
             )}
           </button>
@@ -515,18 +458,105 @@ export function TradeTicket({
             </div>
           </div>
         )}
-        <div className="ticket-bottom">
-          <ArrowDownUp size={13} />
-          <div>
-            <strong>One share. One outcome.</strong>
-            <p>Buy your conviction. Sell when it changes.</p>
+        <details className="trade-protection">
+          <summary>
+            <ShieldCheck size={12} />
+            Order options
+            <ChevronDown size={12} />
+          </summary>
+          {market?.exchange === "FRIENDS" && (
+            <label className="limit-order-toggle">
+              <input
+                type="checkbox"
+                checked={mode !== "IOC"}
+                disabled={uncertain || busy}
+                onChange={(event) =>
+                  setMode(event.target.checked ? "GTC" : "IOC")
+                }
+              />
+              Set a limit price
+            </label>
+          )}
+          {mode !== "IOC" && (
+            <>
+              <label className="ticket-label" htmlFor="limit-price">
+                Limit price<span>0.01–99.99¢</span>
+              </label>
+              <div className="ticket-input">
+                <input
+                  id="limit-price"
+                  type="number"
+                  min="0.01"
+                  max="99.99"
+                  step="0.01"
+                  disabled={uncertain || busy}
+                  value={price}
+                  onChange={(event) => setPrice(event.target.value)}
+                />
+                <span>¢</span>
+              </div>
+              <label className="ticket-label" htmlFor="time-in-force">
+                Time in force
+              </label>
+              <select
+                className="ticket-select"
+                id="time-in-force"
+                disabled={uncertain || busy}
+                value={mode}
+                onChange={(event) =>
+                  setMode(event.target.value as "GTC" | "GTD")
+                }
+              >
+                <option value="GTC">Good until canceled</option>
+                <option value="GTD">Good until date</option>
+              </select>
+              {mode === "GTD" && (
+                <input
+                  className="ticket-select"
+                  aria-label="Order expiry"
+                  disabled={uncertain || busy}
+                  type="datetime-local"
+                  value={expires}
+                  onChange={(event) => setExpires(event.target.value)}
+                />
+              )}
+            </>
+          )}
+          <label className="ticket-label" htmlFor="order-cap">
+            {side === "BUY"
+              ? "Maximum total spend"
+              : "Minimum immediate proceeds"}
+            <span>Optional</span>
+          </label>
+          <div className="ticket-input">
+            <input
+              id="order-cap"
+              disabled={uncertain || busy}
+              type="number"
+              min="0.01"
+              step="0.01"
+              placeholder="No additional cap"
+              value={cap}
+              onChange={(event) => setCap(event.target.value)}
+            />
+            <span>CR</span>
           </div>
-        </div>
+          <p>
+            Immediate orders protect average fill price within 1% of the quote,
+            subject to microcredit rounding, and require the quoted minimum
+            share count. Limit orders use your entered price. Tighter credit
+            caps still apply. Unfilled immediate shares are canceled.
+          </p>
+        </details>
       </div>
       {review && quote && (
         <Modal
-          title="Review your order"
-          eyebrow={`${mode === "IOC" ? "MARKET" : "LIMIT"} · ${market?.exchange} EXCHANGE`}
+          title="Review your prediction"
+          eyebrow={
+            market?.exchange === "LIVE"
+              ? "Live practice wallet"
+              : "Friends group wallet"
+          }
           onClose={() => setReview(false)}
         >
           <div className="modal-body">

@@ -1,3 +1,5 @@
+> Historical November 13 release record. The [November 15 redesign](redesign.md) supersedes the terminal UI and its screenshots.
+
 # Final local verification
 
 Verified November 13, 2026, on Apple Silicon macOS with Node 26.11.1. This record covers the implemented self-hosted release, not every future capability in the original specification.

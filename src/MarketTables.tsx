@@ -1,19 +1,16 @@
 import { useState } from "react";
 import {
-  ArrowDownToLine,
   ArrowRight,
   CheckCircle2,
   ExternalLink,
   Flag,
   MessageSquare,
-  RefreshCw,
   Send,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
 import type {
   Comment,
-  Exchange,
   Fill,
   Group,
   Market,
@@ -22,11 +19,10 @@ import type {
   Outcome,
   Position,
   User,
-  Wallet,
 } from "../shared/types";
 import { api, post, refreshAll, useResource } from "./api";
 import { ReportDialog } from "./Moderation";
-import { cents, credits, date, errorMessage, percent, short } from "./utils";
+import { cents, credits, date, errorMessage, short } from "./utils";
 import {
   ActionForm,
   Badge,
@@ -34,7 +30,6 @@ import {
   ErrorNote,
   Field,
   IconButton,
-  Loading,
   Modal,
 } from "./ui";
 
@@ -51,9 +46,9 @@ const tabNames: Record<TerminalTab, string> = {
   positions: "Positions",
   orders: "Orders",
   book: "Order book",
-  rules: "Rules & resolution",
+  rules: "About",
   discussion: "Discussion",
-  forecast: "Forecast",
+  forecast: "Your forecast",
 };
 export function MarketTables({
   tab,
@@ -68,7 +63,9 @@ export function MarketTables({
   onSignIn,
   onMarket,
   onJournal,
+  tabs = Object.keys(tabNames) as TerminalTab[],
 }: {
+  tabs?: TerminalTab[];
   tab: TerminalTab;
   setTab: (tab: TerminalTab) => void;
   market?: Market;
@@ -83,7 +80,7 @@ export function MarketTables({
   onJournal: () => void;
 }) {
   const fills = useResource<Fill[]>(
-    market && user ? `/markets/${market.id}/fills` : null,
+    market && user && tab === "activity" ? `/markets/${market.id}/fills` : null,
     5000,
   );
   const [error, setError] = useState(""),
@@ -108,11 +105,11 @@ export function MarketTables({
   return (
     <section
       className={`terminal-tables tab-${tab}`}
-      aria-label="Market activity and account tables"
+      aria-label="Market information"
     >
       <header className="table-tabs">
-        <div role="tablist" aria-label="Terminal panels">
-          {(Object.keys(tabNames) as TerminalTab[]).map((key) => (
+        <div role="tablist" aria-label="Market sections">
+          {tabs.map((key) => (
             <button
               key={key}
               role="tab"
@@ -126,20 +123,6 @@ export function MarketTables({
               )}
             </button>
           ))}
-        </div>
-        <div className="table-tools">
-          <span className="table-stream">
-            <i className="tiny-dot" />
-            {market?.exchange === "FRIENDS" ? "GROUP FEED" : "MARKET FEED"}
-          </span>
-          <IconButton label="Refresh activity" onClick={refreshAll}>
-            <RefreshCw size={12} />
-          </IconButton>
-          {user && (
-            <IconButton label="Download account journal" onClick={onJournal}>
-              <ArrowDownToLine size={12} />
-            </IconButton>
-          )}
         </div>
       </header>
       <ErrorNote message={error} />
@@ -280,7 +263,7 @@ export function MarketTables({
               </div>
               {!positions.length && (
                 <Empty
-                  title="Nothing on the line. Yet."
+                  title="No positions yet"
                   detail="Your holdings in this exchange will appear here after a fill."
                 />
               )}
@@ -363,7 +346,7 @@ export function MarketTables({
               </div>
               {!orders.length && (
                 <Empty
-                  title="Your order book is clear"
+                  title="No orders yet"
                   detail="Market and limit orders in this exchange appear here."
                 />
               )}
@@ -386,7 +369,7 @@ export function MarketTables({
 function SignInEmpty({ onSignIn }: { onSignIn: () => void }) {
   return (
     <Empty
-      title="Your seat is waiting"
+      title="Sign in to see your account"
       detail="Sign in to view your separate credit wallets, orders, and positions."
       action={
         <button className="button small" onClick={onSignIn}>
@@ -541,7 +524,7 @@ function MarketRules({
       <div className="rules-main">
         <div className="rules-title">
           <ShieldCheck size={15} />
-          <strong>Resolution contract</strong>
+          <strong>How this market resolves</strong>
           <Badge>{market.status}</Badge>
           {market.sourceUrl && (
             <a href={market.sourceUrl} target="_blank" rel="noreferrer">
@@ -556,7 +539,7 @@ function MarketRules({
         </p>
         <div className="rules-grid">
           <div>
-            <small>AUTHORITATIVE SOURCE</small>
+            <small>Source of truth</small>
             {rules?.source ? (
               /^https?:\/\//.test(rules.source) ? (
                 <a href={rules.source} target="_blank" rel="noreferrer">
@@ -576,23 +559,23 @@ function MarketRules({
             )}
           </div>
           <div>
-            <small>TRADING CLOSES</small>
+            <small>Trading closes</small>
             <span>{date(market.closeAt)}</span>
           </div>
           {rules && (
             <>
               <div>
-                <small>OBSERVATION / DISPUTES</small>
+                <small>Observation and disputes</small>
                 <span>
                   {date(rules.observationAt)} · {rules.disputeHours}h window
                 </span>
               </div>
               <div>
-                <small>VOID POLICY</small>
+                <small>If the market is voided</small>
                 <span>{rules.voidPolicy}</span>
               </div>
               <div>
-                <small>REQUIRED EVIDENCE</small>
+                <small>Required evidence</small>
                 <span>{rules.evidence}</span>
               </div>
             </>

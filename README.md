@@ -1,6 +1,6 @@
 # OpenTrader
 
-A self-hosted prediction terminal with two isolated play-credit economies. The interface follows the supplied dense terminal reference: market ticker, probability chart, persistent order ticket, depth, and account tables. Desktop/mobile layouts, light/dark themes, and keyboard-accessible dialogs are included.
+A self-hosted prediction market with two separate play-credit economies. Start with a searchable market grid, open a question, choose an outcome, and review a protected quote before confirming. Live and Friends have distinct balances. Desktop/mobile layouts, light/dark themes, and keyboard-accessible dialogs are included.
 
 ## Run locally
 
@@ -13,7 +13,7 @@ npm run dev
 
 Open **http://localhost:3000**. Create a handle and a password of at least 12 characters. Registration creates independent 10,000-credit Live and Friends wallets and a private group. There is no anonymous trading account, hidden demo balance, or generated source history.
 
-For a private market, invite friends from **Groups → Invite**. Appoint an independent moderator in **Groups → Members**, select a separate nontrading resolver in the creation form, and have the moderator approve the draft. New markets have funded LMSR liquidity even without peer orders.
+For a private market, invite friends from **Friends → Manage group → Invite**. Appoint an independent moderator in **Manage group → Members**, select a separate nontrading resolver in the creation form, and have the moderator approve the draft. New markets have funded LMSR liquidity even without peer orders.
 
 ## Two exchanges
 
@@ -25,7 +25,8 @@ All credits are fictional, free and nonredeemable. Funds and positions never tra
 
 ## Included tools
 
-- Search/filter, provider/outcome selectors, watchlists, real history timeframes, chart zoom/crosshair/SMA and depth views.
+- A browse-first market grid, topic/search/source filters, watchlists, shareable market URLs, focused probability histories, and depth views.
+- Dedicated portfolio navigation, a simple prediction form, advanced limit options, and mobile navigation with a sticky prediction action.
 - Quote review with exact credit caps, average-price bounds, minimum fill, expiry, win/loss/void payout explanation and repeat-safe confirmation.
 - Portfolio, cost basis, indicative versus executable liquidation values, open orders, fills and CSV journal export.
 - Group rankings, separate forecast calibration, participation counts, and personal Live performance. Live balances are not silently published globally.
@@ -74,6 +75,6 @@ This implementation uses whole contracts and binary Friends markets. Arbitrary e
 
 SQLite transactions, the durable journal, and derived projections run on one host. The 100-user burst shows event-loop queuing under heavy simultaneous load. Multi-host deployment, production availability commitments, recovery drills, staffed escalation and provider rights require separate operational verification. Do not run stateless replicas against independent database copies.
 
-See the [final verification record and screenshots](docs/verification/README.md) for tested flows and remaining operating limits.
+See the [redesign verification](docs/verification/redesign.md) and [original engine verification record](docs/verification/README.md) for tested flows and remaining operating limits.
 
-The original proposals and generated concepts remain under [docs/design](docs/design/) as historical work. The implemented reference-based UI supersedes those images. See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency licenses, chart attribution and UI refinement skill credit.
+The original proposals and generated concepts remain under [docs/design](docs/design/) as historical work. The November 15 browse-first redesign supersedes the terminal interface and earlier concepts. See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency licenses, chart attribution and UI refinement skill credit.
