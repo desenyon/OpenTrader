@@ -1,3 +1,9 @@
+import type {
+  AdminAction,
+  AdminReport,
+  AdminSection,
+  AdminRow,
+} from "../shared/admin.js";
 import { BINARY_VOID_POLICY } from "../shared/rules.js";
 import { validateMarketContent } from "./content-policy.js";
 import { DatabaseSync } from "node:sqlite";
@@ -156,6 +162,7 @@ type State = {
   forecasts: Forecast[];
   corrections: Record<string, Correction>;
   liveBooks: Record<string, OrderBook>;
+  operatorPaused: boolean;
 };
 const empty = (): State => ({
   users: {},
@@ -178,6 +185,7 @@ const empty = (): State => ({
   forecasts: [],
   corrections: {},
   liveBooks: {},
+  operatorPaused: false,
 });
 export class Store {
   readonly db: DatabaseSync;
@@ -195,6 +203,9 @@ export class Store {
     this.db
       .exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
  CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS admin_events (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, action TEXT NOT NULL, data TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(actor_id,idempotency_key));
+ CREATE TRIGGER IF NOT EXISTS admin_no_update BEFORE UPDATE ON admin_events BEGIN SELECT RAISE(ABORT,'Admin audit is immutable'); END;
+ CREATE TRIGGER IF NOT EXISTS admin_no_delete BEFORE DELETE ON admin_events BEGIN SELECT RAISE(ABORT,'Admin audit is immutable'); END;
  CREATE TABLE IF NOT EXISTS moderation_events (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, actor_id TEXT NOT NULL, action TEXT NOT NULL, target_id TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
  CREATE TRIGGER IF NOT EXISTS moderation_no_update BEFORE UPDATE ON moderation_events BEGIN SELECT RAISE(ABORT,'Moderation audit is immutable'); END;
  CREATE TRIGGER IF NOT EXISTS moderation_no_delete BEFORE DELETE ON moderation_events BEGIN SELECT RAISE(ABORT,'Moderation audit is immutable'); END;
@@ -343,12 +354,24 @@ export class Store {
     );
   }
   private publicUser(u: StoredUser): User {
-    return { id: u.id, handle: u.handle, createdAt: u.createdAt };
+    return {
+      id: u.id,
+      handle: u.handle,
+      createdAt: u.createdAt,
+      platformRole: u.platformRole ?? "USER",
+      status: u.status ?? "APPROVED",
+    };
   }
   user(userId: string): User {
     this.refresh();
     const u = this.state.users[userId];
     if (!u) fail(401, "UNAUTHENTICATED", "Sign in required");
+    if ((u.status ?? "APPROVED") !== "APPROVED")
+      fail(
+        403,
+        "ACCOUNT_RESTRICTED",
+        "Your account must be approved and active to continue",
+      );
     return this.publicUser(u);
   }
   private session(userId: string) {
@@ -367,7 +390,39 @@ export class Store {
       ? this.publicUser(this.state.users[s.userId]!)
       : null;
   }
-  register(handle: string, password: string) {
+  requestRegistration(handle: string, password: string) {
+    return this.register(handle, password, { pending: true });
+  }
+  createAdmin(handle: string, password: string) {
+    return this.transaction(() => {
+      const result = this.register(handle, password, { admin: true });
+      const eventId = id();
+      this.db
+        .prepare(
+          "INSERT INTO admin_events(id,actor_id,idempotency_key,request_hash,action,data,result,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          eventId,
+          result.user.id,
+          eventId,
+          hash(handle),
+          "PROVISION_ADMIN",
+          JSON.stringify({
+            reason: "Local operator CLI provisioned administrator",
+            targetId: result.user.id,
+          }),
+          JSON.stringify({ id: eventId, ok: true }),
+          this.now(),
+        );
+      return result;
+    });
+  }
+  // Trusted local provisioning only. HTTP registrations always use requestRegistration.
+  register(
+    handle: string,
+    password: string,
+    options: { pending?: boolean; admin?: boolean } = {},
+  ) {
     if (
       typeof handle !== "string" ||
       !/^[a-zA-Z][a-zA-Z0-9_-]{2,29}$/.test(handle)
@@ -392,7 +447,9 @@ export class Store {
         )
       )
         fail(409, "HANDLE_EXISTS", "Handle is already registered");
-      const u = {
+      const u: StoredUser = {
+        platformRole: options.admin ? "ADMIN" : "USER",
+        status: options.pending ? "PENDING" : "APPROVED",
         id: id(),
         handle,
         createdAt: this.now(),
@@ -400,22 +457,27 @@ export class Store {
         password: digest,
       };
       this.state.users[u.id] = u;
-      this.allocate(u.id, "LIVE", null, "live-1");
-      if (this.state.accounts["reserve:live-corrections"] === undefined)
-        this.transfer(
-          "issuer:live-correction-budget",
-          "reserve:live-corrections",
-          TREASURY,
-          "cash",
-          "FINITE_CORRECTION_BUDGET",
-          "live-1",
-        );
-      this.createGroup(u.id, {
-        name: `${handle}'s exchange`,
-        description:
-          "Private play-credit prediction markets. Invite friends to start.",
-      });
+      if (!options.pending) this.initializeEconomy(u.id);
       return { user: this.publicUser(u), token: this.session(u.id) };
+    });
+  }
+  private initializeEconomy(userId: string) {
+    if (Object.values(this.state.wallets).some((w) => w.userId === userId))
+      return;
+    this.allocate(userId, "LIVE", null, "live-1");
+    if (this.state.accounts["reserve:live-corrections"] === undefined)
+      this.transfer(
+        "issuer:live-correction-budget",
+        "reserve:live-corrections",
+        TREASURY,
+        "cash",
+        "FINITE_CORRECTION_BUDGET",
+        "live-1",
+      );
+    this.createGroup(userId, {
+      name: `${this.state.users[userId]!.handle}'s exchange`,
+      description:
+        "Private play-credit prediction markets. Invite friends to start.",
     });
   }
   login(handle: string, password: string) {
@@ -510,6 +572,7 @@ export class Store {
       .map((w) => this.walletView(w));
   }
   private membership(userId: string, groupId: string) {
+    this.user(userId);
     const m = this.state.members.find(
       (m) =>
         m.userId === userId && m.groupId === groupId && m.status === "ACTIVE",
@@ -997,6 +1060,13 @@ export class Store {
     }
   }
   private assertTrading(userId: string, m: StoredMarket, outcomeId: string) {
+    this.user(userId);
+    if (this.state.operatorPaused)
+      fail(
+        503,
+        "TRADING_PAUSED",
+        "Trading is paused by the platform administrator",
+      );
     if (
       m.status !== "OPEN" ||
       (m.exchange === "FRIENDS" && m.closeAt <= this.now())
@@ -1701,6 +1771,10 @@ export class Store {
             cash: money(segment.cash),
           });
       }
+      const owns =
+        input.side !== "SELL" ||
+        this.balance(this.shareAccount(userId, marketId, input.outcomeId)) >=
+          BigInt(input.quantity);
       const quote: Quote = {
         id: id(),
         marketId,
@@ -1713,10 +1787,12 @@ export class Store {
         afterProbability: probability(plan.q, m.b!, index),
         expiresAt: new Date(this.clock().getTime() + 15000).toISOString(),
         sequence: m.sequence,
-        executable: plan.filled > 0,
-        reason: plan.filled
-          ? undefined
-          : "No executable liquidity within limits or insufficient available holdings",
+        executable: plan.filled > 0 && owns,
+        reason: !owns
+          ? "Not enough unlocked shares to sell the requested quantity"
+          : plan.filled
+            ? undefined
+            : "No executable liquidity within limits or insufficient available holdings",
         sources,
       };
       this.state.quotes[quote.id] = { userId, quote, input: full };
@@ -2704,7 +2780,13 @@ export class Store {
     const members =
       exchange === "FRIENDS"
         ? this.state.members
-            .filter((m) => m.groupId === groupId && m.status === "ACTIVE")
+            .filter(
+              (m) =>
+                m.groupId === groupId &&
+                m.status === "ACTIVE" &&
+                (this.state.users[m.userId]?.status ?? "APPROVED") ===
+                  "APPROVED",
+            )
             .map((m) => ({ id: m.userId, joinedAt: m.joinedAt }))
         : [{ id: userId, joinedAt: this.user(userId).createdAt }];
     return members
@@ -2719,7 +2801,7 @@ export class Store {
           adjustment = (
             this.db
               .prepare(
-                "SELECT delta FROM journal WHERE account=? AND reason IN ('CORRECTION_GRANT','CORRECTION_RECOVERY')",
+                "SELECT delta FROM journal WHERE account=? AND reason IN ('CORRECTION_GRANT','CORRECTION_RECOVERY','ADMIN_ALLOCATION','ADMIN_RECLAIM')",
               )
               .all("cash:" + w.id) as unknown as { delta: string }[]
           ).reduce((sum, row) => sum + BigInt(row.delta), 0n),
@@ -2872,7 +2954,8 @@ export class Store {
       }
       if (
         market.exchange === "FRIENDS" &&
-        this.balance("escrow:" + market.id) < BigInt(Math.max(...market.q))
+        this.balance("escrow:" + market.id) <
+          BigInt(Math.max(...market.q)) * 1_000_000n
       )
         escrowsSolvent = false;
     }
@@ -2919,15 +3002,489 @@ export class Store {
       checkedAt: this.now(),
     };
   }
+  requireAdmin(userId: string) {
+    const user = this.user(userId);
+    if (user.platformRole !== "ADMIN")
+      fail(403, "ADMIN_REQUIRED", "Platform administrator required");
+    return user;
+  }
+  tradingPaused() {
+    this.refresh();
+    return this.state.operatorPaused;
+  }
+  adminAction(actorId: string, action: AdminAction, key: string) {
+    return this.transaction(() => {
+      this.requireAdmin(actorId);
+      if (!key || key.length > 200)
+        fail(422, "IDEMPOTENCY_REQUIRED", "An idempotency key is required");
+      const digest = hash(JSON.stringify(action));
+      const prior = this.db
+        .prepare(
+          "SELECT request_hash, result FROM admin_events WHERE actor_id=? AND idempotency_key=?",
+        )
+        .get(actorId, key) as
+        { request_hash: string; result: string } | undefined;
+      if (prior) {
+        if (prior.request_hash !== digest)
+          fail(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "Key was used with different parameters",
+          );
+        return JSON.parse(prior.result) as { id: string; ok: true };
+      }
+      if (
+        typeof action.reason !== "string" ||
+        action.reason.trim().length < 5 ||
+        action.reason.length > 2000
+      )
+        fail(
+          422,
+          "REASON_REQUIRED",
+          "Explain the action in 5–2,000 characters",
+        );
+      let before: unknown;
+      if (action.type === "ACCOUNT_STATUS") {
+        const u = this.state.users[action.targetId];
+        if (!u) fail(404, "USER_NOT_FOUND", "Account not found");
+        if (
+          !["PENDING", "APPROVED", "REJECTED", "SUSPENDED"].includes(
+            action.status,
+          )
+        )
+          fail(422, "INVALID_STATUS", "Invalid account status");
+        before = this.publicUser(u);
+        const oldStatus = u.status ?? "APPROVED";
+        if (
+          action.status === "PENDING" ||
+          (action.status === "REJECTED" &&
+            oldStatus !== "PENDING" &&
+            oldStatus !== "REJECTED")
+        )
+          fail(
+            409,
+            "INVALID_TRANSITION",
+            "Active accounts must be suspended; only pending requests may be rejected",
+          );
+        if (
+          u.platformRole === "ADMIN" &&
+          action.status !== "APPROVED" &&
+          Object.values(this.state.users).filter(
+            (x) =>
+              x.platformRole === "ADMIN" &&
+              (x.status ?? "APPROVED") === "APPROVED",
+          ).length <= 1
+        )
+          fail(409, "LAST_ADMIN", "Keep at least one approved administrator");
+        u.status = action.status;
+        if (action.status !== "APPROVED") {
+          for (const order of Object.values(this.state.orders))
+            if (order.userId === u.id && order.status === "OPEN")
+              this.cancelInternal(order, "CANCELLED");
+        } else this.initializeEconomy(u.id);
+        this.notify(
+          u.id,
+          "ACCOUNT",
+          "Account status changed",
+          `${action.status}: ${action.reason}`,
+        );
+      } else if (
+        action.type === "WALLET_ADJUSTMENT" ||
+        action.type === "TREASURY_ADJUSTMENT"
+      ) {
+        let amount: bigint;
+        try {
+          amount = units(action.amount);
+        } catch {
+          fail(
+            422,
+            "INVALID_AMOUNT",
+            "Use a signed decimal with at most six decimal places",
+          );
+        }
+        if (
+          amount === 0n ||
+          amount > 1_000_000_000_000n ||
+          amount < -1_000_000_000_000n
+        )
+          fail(
+            422,
+            "INVALID_AMOUNT",
+            "Adjust between -1,000,000 and 1,000,000 credits, excluding zero",
+          );
+        let account: string, issuer: string;
+        if (action.type === "WALLET_ADJUSTMENT") {
+          const w = this.state.wallets[action.targetId];
+          if (!w) fail(404, "WALLET_NOT_FOUND", "Wallet not found");
+          account = "cash:" + w.id;
+          issuer = `issuer:admin:${w.exchange}:${w.groupId ?? "global"}:${w.seasonId}`;
+          this.notify(
+            w.userId,
+            "ECONOMY",
+            "Credit adjustment",
+            `${money(amount)} play credits · ${action.reason}`,
+          );
+        } else {
+          if (!this.state.groups[action.targetId])
+            fail(404, "GROUP_NOT_FOUND", "Group not found");
+          account = "treasury:" + action.targetId;
+          issuer = "issuer:admin-sponsor:" + action.targetId;
+        }
+        before = { account, available: money(this.balance(account)) };
+        if (amount > 0n)
+          this.transfer(
+            issuer,
+            account,
+            amount,
+            "cash",
+            "ADMIN_ALLOCATION",
+            action.targetId,
+          );
+        else
+          this.transfer(
+            account,
+            issuer,
+            -amount,
+            "cash",
+            "ADMIN_RECLAIM",
+            action.targetId,
+          );
+      } else if (action.type === "TRADING_PAUSE") {
+        if (typeof action.paused !== "boolean")
+          fail(422, "INVALID_PAUSE", "Choose a trading state");
+        if (!action.paused && !this.reconcileSystem().balanced)
+          fail(
+            409,
+            "RECONCILIATION_MISMATCH",
+            "Reconcile the economy before resuming trading",
+          );
+        before = this.state.operatorPaused;
+        this.state.operatorPaused = action.paused;
+      } else if (action.type === "CANCEL_ORDER") {
+        const order = this.state.orders[action.targetId];
+        if (!order) fail(404, "ORDER_NOT_FOUND", "Order not found");
+        if (order.status !== "OPEN")
+          fail(409, "ORDER_CLOSED", "Only open orders can be cancelled");
+        before = this.publicOrder(order);
+        this.cancelInternal(order, "CANCELLED");
+        this.notify(
+          order.userId,
+          "ORDER",
+          "Order cancelled by administrator",
+          action.reason,
+        );
+      } else if (
+        ["HALT_MARKET", "RESUME_MARKET", "CLOSE_MARKET"].includes(action.type)
+      ) {
+        const m = this.state.markets[action.targetId];
+        if (!m || m.exchange !== "FRIENDS")
+          fail(404, "MARKET_NOT_FOUND", "Private market not found");
+        before = { status: m.status, sequence: m.sequence };
+        if (action.type === "HALT_MARKET" && m.status !== "OPEN")
+          fail(409, "INVALID_STATE", "Only an open market can be halted");
+        if (
+          action.type === "RESUME_MARKET" &&
+          (m.status !== "HALTED" || m.closeAt <= this.now())
+        )
+          fail(
+            409,
+            "INVALID_STATE",
+            "Only a halted market before its frozen close can resume",
+          );
+        if (
+          action.type === "CLOSE_MARKET" &&
+          (!["OPEN", "HALTED"].includes(m.status) || m.closeAt > this.now())
+        )
+          fail(
+            409,
+            "EARLY_CLOSE_FORBIDDEN",
+            "The frozen trading deadline must pass before closing",
+          );
+        if (action.type !== "RESUME_MARKET")
+          for (const order of Object.values(this.state.orders))
+            if (order.marketId === m.id && order.status === "OPEN")
+              this.cancelInternal(order, "CANCELLED");
+        m.status =
+          action.type === "HALT_MARKET"
+            ? "HALTED"
+            : action.type === "RESUME_MARKET"
+              ? "OPEN"
+              : "CLOSED";
+        m.sequence++;
+        m.updatedAt = this.now();
+        this.notifyMarket(
+          m,
+          "Administrator market action",
+          `${m.status}: ${action.reason}`,
+        );
+      } else
+        fail(422, "INVALID_ADMIN_ACTION", "Unsupported administrator action");
+      const result = { id: id(), ok: true as const };
+      this.db
+        .prepare(
+          "INSERT INTO admin_events(id,actor_id,idempotency_key,request_hash,action,data,result,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          result.id,
+          actorId,
+          key,
+          digest,
+          action.type,
+          JSON.stringify({ ...action, before }),
+          JSON.stringify(result),
+          this.now(),
+        );
+      return result;
+    });
+  }
+  adminReport(
+    actorId: string,
+    section: AdminSection = "users",
+    offset = 0,
+    limit = 50,
+    search = "",
+  ): AdminReport {
+    this.requireAdmin(actorId);
+    offset = Math.max(0, Math.floor(offset));
+    limit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const handle = (userId: string) =>
+      this.state.users[userId]?.handle ?? "Deleted account";
+    const scope = (exchange: string, groupId: string | null) =>
+      exchange === "LIVE"
+        ? "Live Markets"
+        : (this.state.groups[groupId!]?.name ?? "Friends Exchange");
+    const summary = {
+      users: Object.keys(this.state.users).length,
+      pending: Object.values(this.state.users).filter(
+        (u) => u.status === "PENDING",
+      ).length,
+      openOrders: Object.values(this.state.orders).filter(
+        (o) => o.status === "OPEN",
+      ).length,
+      markets: Object.keys(this.state.markets).length,
+      tradingPaused: this.state.operatorPaused,
+    };
+    const filledCash = new Map<string, bigint>();
+    if (section === "bets")
+      for (const fill of this.state.fills)
+        if (fill.orderId)
+          filledCash.set(
+            fill.orderId,
+            (filledCash.get(fill.orderId) ?? 0n) + units(fill.cash),
+          );
+    let rows: AdminRow[] = [];
+    if (section === "users")
+      rows = Object.values(this.state.users).map((u) => ({
+        id: u.id,
+        primary: u.handle,
+        secondary: this.publicUser(u).platformRole!,
+        scope: "Platform",
+        status: u.status ?? "APPROVED",
+        createdAt: u.createdAt,
+        detail: `Account ${u.id}`,
+      }));
+    else if (section === "wallets")
+      rows = Object.values(this.state.wallets).map((w) => {
+        const wallet = this.walletView(w);
+        const realized = Object.values(this.state.positions)
+          .filter(
+            (p) =>
+              p.userId === w.userId &&
+              this.state.markets[p.marketId]?.exchange === w.exchange &&
+              this.state.markets[p.marketId]?.groupId === w.groupId,
+          )
+          .reduce((sum, p) => sum + BigInt(p.realized), 0n);
+        return {
+          id: w.id,
+          primary: handle(w.userId),
+          secondary: `${wallet.locked} locked · ${wallet.initial} starting credits`,
+          scope: scope(w.exchange, w.groupId),
+          status: this.publicUser(this.state.users[w.userId]!).status!,
+          amount: wallet.available,
+          profit: money(realized),
+          createdAt: this.state.users[w.userId]!.createdAt,
+          detail: `Wallet ${w.id} · Season ${w.seasonId} · Only available credits can be reclaimed. Realized P&L excludes credit allocations.`,
+        };
+      });
+    else if (section === "positions")
+      rows = Object.values(this.state.positions).map((p) => {
+        const m = this.state.markets[p.marketId]!,
+          quantity = this.quantity(p.userId, p.marketId, p.outcomeId),
+          locked = this.balance(
+            this.shareLock(p.userId, p.marketId, p.outcomeId),
+          );
+        return {
+          id: this.positionKey(p.userId, p.marketId, p.outcomeId),
+          primary: handle(p.userId),
+          secondary: m.question,
+          scope: scope(m.exchange, m.groupId),
+          status: quantity > 0 ? "HELD" : "CLOSED",
+          amount: money(p.basis),
+          profit: money(p.realized),
+          createdAt: m.updatedAt,
+          detail: `${quantity} ${p.outcomeId} shares owned · ${locked} locked · Market ${m.status} · Cost basis is the remaining acquisition cost, not an executable liquidation quote. Market ${m.id}`,
+        };
+      });
+    else if (section === "bets")
+      rows = Object.values(this.state.orders).map((o) => {
+        const m = this.state.markets[o.marketId]!;
+
+        return {
+          id: o.id,
+          primary: handle(o.userId),
+          secondary: m.question,
+          scope: scope(o.exchange, o.groupId),
+          status: o.status,
+          amount: money(filledCash.get(o.id) ?? 0n),
+          createdAt: o.createdAt,
+          detail: `${o.side} ${o.outcomeLabel ?? o.outcomeId} · ${o.filledQuantity}/${o.quantity} shares filled · limit ${o.limitPrice} · ${o.timeInForce} · ${o.locked} locked · Order ${o.id} · Market ${m.id}`,
+        };
+      });
+    else if (section === "fills")
+      rows = this.state.fills.map((f) => {
+        const m = this.state.markets[f.marketId]!;
+        return {
+          id: f.id,
+          primary: handle(f.userId),
+          secondary: m.question,
+          scope: scope(m.exchange, m.groupId),
+          status: f.source,
+          amount: f.cash,
+          createdAt: f.createdAt,
+          detail: `${f.side} ${f.quantity} ${f.outcomeId} shares · ${f.price} average price · Fill ${f.id} · Order ${f.orderId}`,
+        };
+      });
+    else if (section === "settlements")
+      rows = Object.values(this.state.markets).flatMap((m) =>
+        (m.settledHoldings ?? []).map((h) => {
+          const position =
+            this.state.positions[this.positionKey(h.userId, m.id, h.outcomeId)];
+          return {
+            id: `${m.id}:${h.userId}:${h.outcomeId}`,
+            primary: handle(h.userId),
+            secondary: m.question,
+            scope: scope(m.exchange, m.groupId),
+            status: m.status,
+            amount: h.payout,
+            profit: money(position?.realized ?? "0"),
+            createdAt: m.updatedAt,
+            detail: `${h.quantity} ${h.outcomeId} shares settled · Outcome ${m.resolution?.outcomeId ?? "VOID"} · Payout is gross contractual entitlement; realized P&L includes prior sales. Authorized corrections and any capped recoveries are recorded separately in the ledger.`,
+          };
+        }),
+      );
+    else if (section === "markets")
+      rows = Object.values(this.state.markets).map((m) => ({
+        id: m.id,
+        exchange: m.exchange,
+        primary: m.question,
+        secondary: `${m.outcomes.map((o) => o.label).join(" / ")} · closes ${m.closeAt}`,
+        scope: scope(m.exchange, m.groupId),
+        status: m.status,
+        amount:
+          m.exchange === "FRIENDS"
+            ? money(this.balance("escrow:" + m.id))
+            : undefined,
+        createdAt: m.createdAt,
+        detail: `${m.exchange} · Creator ${m.creatorId ? handle(m.creatorId) : m.provider} · Resolver ${m.resolverId ? handle(m.resolverId) : "Provider"} · Sequence ${m.sequence} · ${m.rules?.condition ?? m.description} · ${m.rules?.source ?? m.sourceUrl ?? ""} · Rules and settlement governance remain immutable.`,
+      }));
+    else if (section === "treasuries")
+      rows = Object.values(this.state.groups).map((g) => ({
+        id: g.id,
+        primary: g.name,
+        secondary: `Owner ${handle(g.ownerId)}`,
+        scope: g.name,
+        status: "SPONSOR_BUDGET",
+        amount: money(this.balance("treasury:" + g.id)),
+        createdAt: g.createdAt,
+        detail: `Unreserved sponsor budget only. Open-market reserves are held in market escrow and cannot be reclaimed here. Group ${g.id}`,
+      }));
+    else if (section === "audit")
+      rows = (
+        this.db
+          .prepare(
+            "SELECT id,actor_id,action,data,created_at FROM admin_events ORDER BY rowid DESC",
+          )
+          .all() as unknown as {
+          id: string;
+          actor_id: string;
+          action: string;
+          data: string;
+          created_at: string;
+        }[]
+      ).map((e) => {
+        const data = JSON.parse(e.data);
+        return {
+          id: e.id,
+          primary: handle(e.actor_id),
+          secondary: data.reason,
+          scope: data.targetId ?? "Platform",
+          status: e.action,
+          amount: data.amount,
+          createdAt: e.created_at,
+          detail: [
+            data.targetId ? `Target ${data.targetId}` : "Platform action",
+            data.status ? `Status ${data.status}` : "",
+            typeof data.paused === "boolean"
+              ? `Trading paused: ${data.paused}`
+              : "",
+            data.before?.available
+              ? `Previous available balance: ${data.before.available} CR`
+              : "",
+            data.before?.status ? `Previous status: ${data.before.status}` : "",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        };
+      });
+    else fail(422, "INVALID_SECTION", "Unknown report section");
+    const needle = search.trim().toLowerCase();
+    rows = rows
+      .filter(
+        (row) =>
+          !needle ||
+          [
+            row.id,
+            row.primary,
+            row.secondary,
+            row.scope,
+            row.status,
+            row.detail,
+          ].some((v) => v?.toLowerCase().includes(needle)),
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return {
+      section,
+      rows: rows.slice(offset, offset + limit),
+      total: rows.length,
+      offset,
+      limit,
+      summary,
+    };
+  }
+  adminLedger(actorId: string, walletId: string, offset = 0) {
+    this.requireAdmin(actorId);
+    const w = this.state.wallets[walletId];
+    if (!w) fail(404, "WALLET_NOT_FOUND", "Wallet not found");
+    return this.db
+      .prepare(
+        "SELECT id,transaction_id AS transactionId,asset,account,delta,reason,reference,created_at AS createdAt FROM journal WHERE account IN (?,?) ORDER BY id DESC LIMIT 100 OFFSET ?",
+      )
+      .all("cash:" + walletId, "lock:" + walletId, offset);
+  }
   bootstrap(userId: string | null) {
     this.tick();
+    const identity =
+      userId && this.state.users[userId]
+        ? this.publicUser(this.state.users[userId]!)
+        : null;
+    const active = identity?.status === "APPROVED" ? userId : null;
     return {
-      user: userId ? this.user(userId) : null,
-      groups: userId ? this.groups(userId) : [],
-      wallets: userId ? this.wallets(userId) : [],
-      notifications: userId ? this.notifications(userId) : [],
+      user: identity,
+      groups: active ? this.groups(active) : [],
+      wallets: active ? this.wallets(active) : [],
+      notifications: active ? this.notifications(active) : [],
       settings: { liveEnabled: true, registrationOpen: true, version: "0.1.0" },
-      activeGroupId: userId ? this.groups(userId)[0]?.id : undefined,
+      activeGroupId: active ? this.groups(active)[0]?.id : undefined,
     };
   }
   liveMarketIds() {

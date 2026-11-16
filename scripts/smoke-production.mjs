@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -11,6 +11,27 @@ await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
 const port = probe.address().port;
 await new Promise((resolve) => probe.close(resolve));
 const base = `http://127.0.0.1:${port}`;
+const credentialsFile = join(directory, "admin.txt");
+const provision = spawnSync(
+  process.execPath,
+  [
+    "dist-server/create-admin.js",
+    "--database",
+    join(directory, "test.sqlite"),
+    "--credentials",
+    credentialsFile,
+    "--handle",
+    "smoke_admin",
+  ],
+  { encoding: "utf8" },
+);
+if (provision.status !== 0) rmSync(directory, { recursive: true, force: true });
+assert.equal(
+  provision.status,
+  0,
+  "Built administrator provisioning must succeed",
+);
+const secret = /Password: (.+)/.exec(readFileSync(credentialsFile, "utf8"))[1];
 const child = spawn(process.execPath, ["dist-server/index.js"], {
   cwd: process.cwd(),
   env: {
@@ -86,10 +107,57 @@ try {
     })
   ).json();
   assert.equal(bootstrap.user.handle, "packaging_smoke");
-  assert.equal(bootstrap.wallets.length, 2);
-  assert.equal(bootstrap.groups.length, 1);
+  assert.equal(bootstrap.user.status, "PENDING");
+  assert.equal(bootstrap.user.platformRole, "USER");
+  assert.equal(bootstrap.wallets.length, 0);
+  assert.equal(bootstrap.groups.length, 0);
+  const pendingHeaders = { Cookie: cookie.split(";")[0] };
+  assert.equal(
+    (await fetch(`${base}/api/wallets`, { headers: pendingHeaders })).status,
+    403,
+  );
+  const login = await fetch(`${base}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: base },
+    body: JSON.stringify({ handle: "smoke_admin", password: secret }),
+  });
+  assert.equal(login.status, 200);
+  assert.equal((await login.json()).user.platformRole, "ADMIN");
+  const adminHeaders = {
+    Cookie: login.headers.get("set-cookie").split(";")[0],
+    "Content-Type": "application/json",
+    Origin: base,
+  };
+  const approve = await fetch(`${base}/api/admin/actions`, {
+    method: "POST",
+    headers: { ...adminHeaders, "Idempotency-Key": "production-approval" },
+    body: JSON.stringify({
+      type: "ACCOUNT_STATUS",
+      targetId: bootstrap.user.id,
+      status: "APPROVED",
+      reason: "Isolated production smoke approval",
+    }),
+  });
+  assert.equal(approve.status, 200);
+  const approved = await (
+    await fetch(`${base}/api/bootstrap`, { headers: pendingHeaders })
+  ).json();
+  assert.equal(approved.wallets.length, 2);
+  assert.equal(approved.groups.length, 1);
+  assert.ok(
+    approved.wallets.every((wallet) => wallet.available === "10000.000000"),
+  );
+  const report = await fetch(`${base}/api/admin/report?section=users`, {
+    headers: adminHeaders,
+  });
+  assert.equal(report.status, 200);
+  assert.equal((await report.json()).total, 2);
+  const reconciliation = await (
+    await fetch(`${base}/api/admin/reconciliation`, { headers: adminHeaders })
+  ).json();
+  assert.equal(reconciliation.balanced, true);
   console.log(
-    "Production smoke passed: executable bundle, HTTP health, static HTML, Brotli assets, immutable asset caching, hosted data gate, account/session, and isolated wallets.",
+    "Production smoke passed: executable bundle, HTTP health, static HTML, Brotli assets, immutable asset caching, hosted data gate, pending registration, CLI admin login, approval, isolated wallets, admin reporting and reconciliation.",
   );
 } finally {
   if (child.exitCode === null) {

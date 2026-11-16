@@ -5,6 +5,8 @@ export interface User {
   id: string;
   handle: string;
   createdAt: string;
+  platformRole?: "ADMIN" | "USER";
+  status?: import("./admin").AccountStatus;
 }
 export interface Group {
   id: string;

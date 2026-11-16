@@ -52,7 +52,7 @@ export function AuthDialog({
         <p className="dialog-intro">
           {mode === "login"
             ? "Sign in to trade, track your positions, and join your friends."
-            : "Create an account for 10,000 fictional credits in Live and your own private Friends group."}
+            : "Request an account. After admin approval, receive separate Live and Friends wallets with 10,000 fictional credits each. Platform administrators can review trading activity across groups."}
         </p>
         <div className="dialog-tabs">
           <button

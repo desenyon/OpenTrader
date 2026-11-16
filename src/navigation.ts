@@ -1,6 +1,6 @@
 import type { Exchange, Market } from "../shared/types";
 
-export type PageView = "markets" | "market" | "portfolio";
+export type PageView = "markets" | "market" | "portfolio" | "admin";
 export interface AppRoute {
   exchange: Exchange;
   view: PageView;
@@ -9,6 +9,7 @@ export interface AppRoute {
 }
 export function readRoute(hash: string): AppRoute {
   try {
+    if (hash === "#/admin") return { exchange: "LIVE", view: "admin" };
     const segments = hash.replace(/^#\/?/, "").split("/");
     const exchange = segments.shift() === "friends" ? "FRIENDS" : "LIVE";
     const groupId =
@@ -36,6 +37,7 @@ export function readRoute(hash: string): AppRoute {
   }
 }
 export function routeHash(route: AppRoute): string {
+  if (route.view === "admin") return "#/admin";
   const prefix =
     route.exchange === "FRIENDS"
       ? `friends${route.groupId ? `/${encodeURIComponent(route.groupId)}` : ""}`

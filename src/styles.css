@@ -2700,3 +2700,33 @@ td:first-child {
     padding-bottom: 92px;
   }
 }
+
+.account-waiting {
+  max-width: 580px;
+  margin: 100px auto;
+  text-align: center;
+  line-height: 1.8;
+}
+.account-waiting h1 {
+  font-size: 30px;
+  letter-spacing: -1px;
+}
+.account-waiting p {
+  color: var(--muted);
+}
+.account-waiting > div {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 25px;
+}
+@media (max-width: 600px) {
+  .account-waiting {
+    margin: 56px 0;
+    padding: 16px;
+  }
+}
+
+.admin-header-actions {
+  margin-left: auto;
+}

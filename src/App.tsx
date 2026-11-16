@@ -35,6 +35,7 @@ import type {
 } from "../shared/types";
 import { api, post, refreshAll, useEvents, useResource } from "./api";
 import { downloadJournal } from "./journal";
+
 import {
   AuthDialog,
   CreateMarketDialog,
@@ -63,6 +64,7 @@ import {
   type AppRoute,
 } from "./navigation";
 
+const AdminDashboard = lazy(() => import("./AdminDashboard"));
 const MarketChart = lazy(() =>
   import("./Chart").then((module) => ({ default: module.MarketChart })),
 );
@@ -131,7 +133,11 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const bootstrap = useResource<Bootstrap>("/bootstrap", 15000);
-  const user = bootstrap.data?.user || null;
+  const identity = bootstrap.data?.user || null;
+  const user =
+    identity && (identity.status ?? "APPROVED") === "APPROVED"
+      ? identity
+      : null;
   const groups = bootstrap.data?.groups || [];
   const exchange = route.exchange;
   const groupId =
@@ -162,7 +168,7 @@ export default function App() {
     [openMarket],
   );
   const marketsResource = useResource<Market[]>(
-    exchange === "FRIENDS" && (!user || !groupId)
+    route.view === "admin" || (exchange === "FRIENDS" && (!user || !groupId))
       ? null
       : `/markets?${scope}${exchange === "LIVE" && provider !== "all" ? `&provider=${provider}` : ""}`,
     10000,
@@ -187,11 +193,15 @@ export default function App() {
     2000,
   );
   const positionsResource = useResource<Position[]>(
-    user && (exchange === "LIVE" || groupId) ? `/positions?${scope}` : null,
+    user && route.view !== "admin" && (exchange === "LIVE" || groupId)
+      ? `/positions?${scope}`
+      : null,
     5000,
   );
   const ordersResource = useResource<Order[]>(
-    user && (exchange === "LIVE" || groupId) ? `/orders?${scope}` : null,
+    user && route.view !== "admin" && (exchange === "LIVE" || groupId)
+      ? `/orders?${scope}`
+      : null,
     5000,
   );
   const positions = positionsResource.data || [],
@@ -206,7 +216,10 @@ export default function App() {
   );
   const tradingEnabled =
     operational.data?.tradingEnabled === true && !operational.error;
-  const watchlist = useResource<string[]>(user ? "/watchlist" : null, 15000);
+  const watchlist = useResource<string[]>(
+    user && route.view !== "admin" ? "/watchlist" : null,
+    15000,
+  );
   const visibleMarkets = discoverMarkets(allMarkets, {
     query,
     topic,
@@ -227,7 +240,7 @@ export default function App() {
     (sum, p) => sum + Number(p.realizedPnl) + Number(p.unrealizedPnl),
     0,
   );
-  useEvents(!!user);
+  useEvents(!!user && route.view !== "admin");
   useEffect(() => {
     if (watchlist.data) setWatched(watchlist.data);
     else if (!user) setWatched([]);
@@ -388,22 +401,26 @@ export default function App() {
               Portfolio
             </button>
           </nav>
-          <label className="header-search">
-            <Search size={17} />
-            <input
-              ref={searchRef}
-              type="search"
-              aria-label="Search markets"
-              placeholder="Search markets"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                if (route.view !== "markets") browse();
-              }}
-            />
-            <kbd>⌘ K</kbd>
-          </label>
-          <div className="header-actions">
+          {route.view !== "admin" && (
+            <label className="header-search">
+              <Search size={17} />
+              <input
+                ref={searchRef}
+                type="search"
+                aria-label="Search markets"
+                placeholder="Search markets"
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  if (route.view !== "markets") browse();
+                }}
+              />
+              <kbd>⌘ K</kbd>
+            </label>
+          )}
+          <div
+            className={`header-actions${route.view === "admin" ? " admin-header-actions" : ""}`}
+          >
             {user ? (
               <>
                 <button className="wallet-button" onClick={portfolio}>
@@ -426,6 +443,8 @@ export default function App() {
                   {user.handle[0]?.toUpperCase()}
                 </button>
               </>
+            ) : identity ? (
+              <span className="section-kicker">{identity.handle}</span>
             ) : (
               <button
                 className="button primary signup-button"
@@ -445,6 +464,17 @@ export default function App() {
               </button>
               {menuOpen && (
                 <div className="navigation-menu">
+                  {user?.platformRole === "ADMIN" && (
+                    <button
+                      onClick={() => {
+                        navigate({ exchange: "LIVE", view: "admin" });
+                        setMenuOpen(false);
+                      }}
+                    >
+                      <ShieldCheck size={15} /> Admin dashboard
+                    </button>
+                  )}
+
                   <button
                     onClick={() => {
                       portfolio();
@@ -565,7 +595,59 @@ export default function App() {
             </button>
           </div>
         )}
-        {exchange === "FRIENDS" && !user && !bootstrap.loading ? (
+        {identity &&
+        identity.status !== "APPROVED" &&
+        identity.status !== undefined ? (
+          <section className="account-waiting">
+            <ShieldCheck size={32} />
+            <h1>
+              {identity.status === "PENDING"
+                ? "Your account is awaiting approval"
+                : identity.status === "SUSPENDED"
+                  ? "Your account is suspended"
+                  : "Account request declined"}
+            </h1>
+            <p>
+              {identity.status === "PENDING"
+                ? "An administrator will review your request. Once approved, you’ll receive separate Live and Friends play-credit wallets."
+                : "Trading and group access are unavailable. Your economic history remains recorded. Contact your administrator for review."}
+            </p>
+            <p>
+              Signed in as <strong>{identity.handle}</strong>
+            </p>
+            <div>
+              <button
+                className="button primary"
+                onClick={() => bootstrap.refresh()}
+              >
+                Check account status
+              </button>
+              <button
+                className="button secondary"
+                onClick={() => {
+                  void post("/auth/logout")
+                    .then(() => refreshAll())
+                    .catch((e) => setActionError(errorMessage(e)));
+                }}
+              >
+                Sign out
+              </button>
+            </div>
+          </section>
+        ) : route.view === "admin" ? (
+          user?.platformRole === "ADMIN" ? (
+            <Suspense fallback={<Loading />}>
+              <AdminDashboard
+                onBack={() => navigate({ exchange: "LIVE", view: "markets" })}
+              />
+            </Suspense>
+          ) : (
+            <Empty
+              title="Admin access required"
+              detail="Sign in with a platform administrator account to access this dashboard."
+            />
+          )
+        ) : exchange === "FRIENDS" && !user && !bootstrap.loading ? (
           <section className="friends-intro">
             <span className="section-kicker">Just your circle</span>
             <h1>

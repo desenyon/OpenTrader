@@ -1,7 +1,10 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["server/index.ts"],
+  entry: {
+    index: "server/index.ts",
+    "create-admin": "scripts/create-admin.ts",
+  },
   format: ["esm"],
   platform: "node",
   target: "node24",

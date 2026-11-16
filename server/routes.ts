@@ -125,7 +125,7 @@ export async function registerRoutes(
           "Registration is closed on this server",
         );
       const body = credentials.parse(request.body),
-        result = store.register(body.handle, body.password);
+        result = store.requestRegistration(body.handle, body.password);
       session(request, reply, result.token);
       return {
         ...store.bootstrap(result.user.id),

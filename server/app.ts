@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { Store } from "./store";
 import { registerRoutes } from "./routes";
 import { currentUser } from "./auth";
+import { registerAdminRoutes } from "./admin";
 import { MarketDataService } from "./providers";
 import { registerModerationRoutes } from "./moderation";
 import { createReconciliationGuard } from "./reconciliation";
@@ -159,20 +160,29 @@ export async function createApp(
   );
 
   app.get("/api/health", async () => ({
-    status: accounting.status().tradingEnabled ? "ok" : "read-only",
+    status:
+      accounting.status().tradingEnabled && !store.tradingPaused()
+        ? "ok"
+        : "read-only",
     version: "0.1.0",
   }));
   app.get("/api/exchange-status", async () => {
     const { tradingEnabled, checkedAt, reason } = accounting.status();
-    return { tradingEnabled, checkedAt, reason };
+    return {
+      tradingEnabled: tradingEnabled && !store.tradingPaused(),
+      checkedAt,
+      reason: store.tradingPaused() ? "ADMIN_PAUSED" : reason,
+    };
   });
   app.get("/api/live/status", async () => providers.status());
   await registerRoutes(app, store, {
     providers,
     liveEnabled,
-    canTrade: () => accounting.status().tradingEnabled,
+    canTrade: () =>
+      accounting.status().tradingEnabled && !store.tradingPaused(),
   });
   await registerModerationRoutes(app, store);
+  await registerAdminRoutes(app, store, accounting);
 
   // Due actions are also checked inline by the engine; this timer makes
   // expiry, closing and resolution progress when no browser is open.
@@ -227,7 +237,7 @@ export async function createApp(
         });
       const groupId = request.query.groupId;
       const authorized = () => {
-        if (!currentUser(request, store)) return false;
+        if (currentUser(request, store)?.status !== "APPROVED") return false;
         return (
           !groupId ||
           store.bootstrap(user.id).groups.some((group) => group.id === groupId)

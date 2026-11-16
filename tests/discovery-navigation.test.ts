@@ -138,3 +138,8 @@ describe("live market discovery", () => {
     expect(chance(1)).toBe("100%");
   });
 });
+
+it("round trips the protected admin destination", () => {
+  expect(readRoute("#/admin")).toEqual({ exchange: "LIVE", view: "admin" });
+  expect(routeHash({ exchange: "LIVE", view: "admin" })).toBe("#/admin");
+});
