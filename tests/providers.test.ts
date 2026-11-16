@@ -181,7 +181,10 @@ describe("provider normalization", () => {
       status: "active",
       close_time: "2099-08-01T00:00:00Z",
     });
-    expect(market.outcomes.map((x) => x.label)).toEqual(["Yes · Mars", "No · Mars"]);
+    expect(market.outcomes.map((x) => x.label)).toEqual([
+      "Yes · Mars",
+      "No · Mars",
+    ]);
     expect(market.outcomes.map((x) => x.id)).toEqual(["yes", "no"]);
   });
   it("aggregates actual observations into OHLC without synthetic volume or filler", () => {
@@ -729,4 +732,23 @@ describe("provider final-only outcome evidence", () => {
       "yes",
     );
   });
+});
+it("forces current provider trading status for a trade even inside the discovery cache lifetime", async () => {
+  let closed = false,
+    calls = 0;
+  const service = new MarketDataService({
+    enabled: true,
+    now: () => now,
+    fetcher: async () => {
+      calls++;
+      return new Response(JSON.stringify({ ...poly, closed }));
+    },
+  });
+  expect((await service.getMarket("poly:42")).status).toBe("OPEN");
+  closed = true;
+  expect((await service.getMarket("poly:42")).status).toBe("OPEN");
+  expect((await service.getMarket("poly:42", { fresh: true })).status).toBe(
+    "CLOSED",
+  );
+  expect(calls).toBe(2);
 });
