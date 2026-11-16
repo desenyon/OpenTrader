@@ -2764,3 +2764,10 @@ td:first-child {
   font-size: 12px;
   margin: 0 0 24px;
 }
+
+.source-reference {
+  color: var(--muted);
+  font-size: 12px;
+  margin: -8px 0 20px;
+  line-height: 1.6;
+}
