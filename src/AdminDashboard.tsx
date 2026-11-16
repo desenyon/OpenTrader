@@ -48,7 +48,7 @@ const sections: {
     amount: "Available credits",
     profit: "Realized P&L",
   },
-  { id: "treasuries", label: "Group budgets", amount: "Free budget" },
+  { id: "treasuries", label: "Liquidity budgets", amount: "Free budget" },
   { id: "markets", label: "Markets", amount: "Settlement escrow" },
   { id: "audit", label: "Admin history", amount: "Adjustment" },
 ];
@@ -357,7 +357,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                 {section === "markets"
                   ? "Market"
                   : section === "treasuries"
-                    ? "Group"
+                    ? "Treasury"
                     : "Account"}
               </th>
               <th>Scope</th>
@@ -597,7 +597,8 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                 </button>
               )}
               {section === "markets" &&
-                selected.exchange === "FRIENDS" &&
+                (selected.exchange === "FRIENDS" ||
+                  selected.executionModel === "SOURCE_SEEDED_LMSR") &&
                 ["OPEN", "HALTED"].includes(selected.status) && (
                   <button
                     className="button secondary"
