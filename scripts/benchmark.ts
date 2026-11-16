@@ -26,7 +26,7 @@ import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import type { FastifyInstance } from "fastify";
-import type { Market, OrderInput } from "../shared/types";
+import type { Market, OrderBook, OrderInput } from "../shared/types";
 import { createApp } from "../server/app";
 import { Store } from "../server/store";
 
@@ -40,6 +40,7 @@ const deadline = new Date(
 const fingerprintPaths = [
   "server/store.ts",
   "server/math.ts",
+  "server/live-economy.ts",
   "server/app.ts",
   "server/routes.ts",
   "scripts/benchmark.ts",
@@ -59,6 +60,7 @@ const startedAt = new Date().toISOString();
 const totalStart = performance.now();
 const store = new Store({ path: databasePath });
 let app: FastifyInstance | undefined;
+let liveStore: Store | undefined;
 const log = (message: string) => {
   process.stdout.write(`${message}\n`);
 };
@@ -349,6 +351,87 @@ try {
       read: i === USER_COUNT - 1,
     })),
   );
+  // Local pricing/ledger benchmark only; this synthetic source fixture is never
+  // shown in the app or submitted to an external provider. Same disk-backed DB.
+  liveStore = new Store({ path: databasePath, liveCommunity: true });
+  const liveCurve = [];
+  for (const quantity of [10, 100, 1000]) {
+    const market: Market = {
+      id: `poly:91000${quantity}`,
+      exchange: "LIVE",
+      provider: "polymarket",
+      groupId: null,
+      question: `Will isolated benchmark measurement ${quantity} exceed its target?`,
+      description: "Synthetic benchmark source only; not a provider market.",
+      category: "Benchmark",
+      outcomes: [
+        { id: "yes", label: "Yes", probability: 0.63 },
+        { id: "no", label: "No", probability: 0.37 },
+      ],
+      status: "OPEN",
+      volume: 0,
+      liquidity: 1000,
+      closeAt: deadline,
+      createdAt: SETUP_NOW.toISOString(),
+      updatedAt: SETUP_NOW.toISOString(),
+      sequence: 0,
+    };
+    const book = (): OrderBook => ({
+      marketId: market.id,
+      outcomeId: "yes",
+      timestamp: new Date().toISOString(),
+      stale: false,
+      source: "Isolated synthetic benchmark",
+      bids: [{ price: 0.62, quantity: 1000, source: "EXTERNAL" }],
+      asks: [{ price: 0.64, quantity: 1000, source: "EXTERNAL" }],
+    });
+    const input: OrderInput = {
+      marketId: market.id,
+      outcomeId: "yes",
+      side: "BUY",
+      quantity,
+      limitPrice: "0.9999",
+      timeInForce: "IOC",
+      engineVersion: 2,
+      minFillQuantity: quantity,
+    };
+    const quotes = [];
+    for (let i = 0; i < 5; i++) {
+      const start = performance.now();
+      const quote = liveStore.quoteLive(owner.user.id, market, book(), input);
+      quotes.push(performance.now() - start);
+      assert.equal(quote.filledQuantity, quantity);
+    }
+    let start = performance.now();
+    const bought = liveStore.executeLive(
+      owner.user.id,
+      market,
+      book(),
+      input,
+      randomUUID(),
+    );
+    const buyMs = performance.now() - start;
+    start = performance.now();
+    const sold = liveStore.executeLive(
+      owner.user.id,
+      market,
+      book(),
+      { ...input, side: "SELL", limitPrice: "0.0001" },
+      randomUUID(),
+    );
+    const sellMs = performance.now() - start;
+    assert.equal(bought.order.filledQuantity, quantity);
+    assert.equal(sold.order.filledQuantity, quantity);
+    liveCurve.push({
+      quantity,
+      quoteLatency: summary(quotes),
+      buyMs: Number(buyMs.toFixed(3)),
+      sellMs: Number(sellMs.toFixed(3)),
+    });
+    log(
+      `Live weighted curve ${quantity} shares: quote p50=${summary(quotes).p50Ms}ms p95=${summary(quotes).p95Ms}ms; buy=${buyMs.toFixed(3)}ms sell=${sellMs.toFixed(3)}ms`,
+    );
+  }
   const reconciliationStart = performance.now();
   const reconciliation = store.reconcile(owner.user.id);
   const reconciliationMs = performance.now() - reconciliationStart;
@@ -394,7 +477,9 @@ try {
       buyLimitPrice: "0.7500",
       hardMaxTotalCost: "0.750000",
       minimumFillQuantity: 1,
-      exchanges: ["FRIENDS"],
+      exchanges: ["FRIENDS", "LIVE"],
+      liveCurveFixture:
+        "Three synthetic 63% opening-prior markets, b=500; five quote previews and one buy/undo per size, direct Store calls without provider/network latency",
       sqlite: {
         diskBacked: true,
         journalMode: "WAL",
@@ -413,6 +498,7 @@ try {
     warmup,
     typical20: typical,
     hundredUsers,
+    liveCurve,
     reconciliation: {
       ...reconciliation,
       durationMs: Number(reconciliationMs.toFixed(3)),
@@ -422,6 +508,7 @@ try {
     sourceSha256AtEnd,
     sourceChangedDuringRun,
     limitations: [
+      "Live curve measurements use direct Store calls with synthetic source snapshots and include SQLite projection writes; they exclude provider/network latency and are separate from Friends HTTP bursts.",
       "Local in-process Fastify inject; no TCP, TLS, browser rendering, external provider latency, or network queueing.",
       "Concurrency means simultaneously submitted request intents on one Node process; SQLite and exchange math execute synchronously on the event loop.",
       "Queue-to-onRequest includes injection dispatch and earlier request hooks; scheduled-to-preHandler also includes auth, rate-limit, parsing, and event-loop delay.",
@@ -455,6 +542,7 @@ try {
     );
 } finally {
   if (app) await app.close();
+  liveStore?.close();
   store.close();
   await rm(tempDirectory, { recursive: true, force: true });
   log("Removed only the benchmark-owned temporary database directory.");
