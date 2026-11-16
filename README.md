@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="#get-started">Get started</a> ·
+  <a href="#screenshots">Screenshots</a> ·
   <a href="#two-exchanges-one-place">The exchanges</a> ·
   <a href="#behind-the-market">Architecture</a> ·
   <a href="#documentation">Documentation</a> ·
@@ -20,9 +21,9 @@ OpenTrader is a self-hosted prediction market for friend groups. Practice on pub
 
 **Free, nonredeemable credits. No deposits, withdrawals, prizes, leverage, or real-world orders.**
 
-<a href="docs/verification/redesign/markets-desktop.png"><img src="docs/verification/redesign/markets-desktop.png" alt="OpenTrader desktop market grid in dark mode, with Live and Friends navigation, search, categories, and outcome cards" width="100%" /></a>
+<a href="docs/screenshots/markets-desktop.png"><img src="docs/screenshots/markets-desktop.png" alt="OpenTrader Friends market discovery showing the Forecast Club and six example market cards" width="100%" /></a>
 
-<sub>Actual application capture from the browse-first release. Provider quotes are historical screenshot data; executable quotes must pass freshness checks.</sub>
+<sub>Actual running application, captured with isolated example accounts and original demo markets. All balances and activity shown are fictional.</sub>
 
 ## Get started
 
@@ -66,6 +67,37 @@ Use one application instance with a persistent local volume. Take consistent SQL
 
 </details>
 
+## Screenshots
+
+Fresh captures of the running app with demo accounts and markets. Click an image to open it at full resolution.
+
+### Market detail and trading
+
+<a href="docs/screenshots/trading-desktop.png"><img src="docs/screenshots/trading-desktop.png" alt="A Friends market with a recorded probability chart, YES and NO outcomes, and a protected prediction ticket" width="100%" /></a>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Portfolio and positions</strong><br /><br />
+      <a href="docs/screenshots/portfolio-desktop.png"><img src="docs/screenshots/portfolio-desktop.png" alt="Portfolio with separate group balance, order locks, cost basis, indicative and liquidation values, and profit or loss" width="100%" /></a>
+    </td>
+    <td width="50%" valign="top">
+      <strong>Admin and account approvals</strong><br /><br />
+      <a href="docs/screenshots/admin-desktop.png"><img src="docs/screenshots/admin-desktop.png" alt="Admin dashboard with pending account requests, balanced economy checks, and five main navigation sections" width="100%" /></a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <strong>Mobile market discovery</strong><br /><br />
+      <a href="docs/screenshots/markets-mobile.png"><img src="docs/screenshots/markets-mobile.png" alt="Mobile Friends market discovery with search, group selection, outcome cards, and bottom navigation" width="300" /></a>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <strong>Anonymous trading at signup</strong><br /><br />
+      <a href="docs/screenshots/signup-mobile.png"><img src="docs/screenshots/signup-mobile.png" alt="Signup form with the optional Appear anonymous when trading checkbox directly below the handle field" width="300" /></a>
+    </td>
+  </tr>
+</table>
+
 ## Two exchanges. One place.
 
 |                | Live Markets                                      | Friends Exchange                                     |
@@ -87,16 +119,7 @@ Funds and positions stay inside their own exchange and group. Market prices expr
 - **Choose your trading identity.** Signup can hide your name in fills and rankings behind an alias per economy. Admins retain attribution; memberships, comments, and market roles stay named.
 - **Keep score honestly.** Group returns and forecast calibration are separate. Extra credit allocations do not count as trading performance.
 
-<details>
-<summary><strong>See the mobile interface</strong></summary>
-
-<p align="center">
-  <img src="docs/verification/redesign/markets-mobile.png" width="340" alt="OpenTrader mobile market discovery with named bottom navigation" />
-</p>
-
 The app supports desktop/mobile layouts, light/dark themes, keyboard-accessible dialogs, and a sticky mobile prediction action.
-
-</details>
 
 ### Your exchange, your controls
 
