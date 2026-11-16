@@ -81,6 +81,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
     [pending, setPending] = useState<{
       action: AdminAction;
       title: string;
+      scope?: string;
     } | null>(null);
   const [adjustment, setAdjustment] = useState(""),
     [busy, setBusy] = useState(false),
@@ -127,7 +128,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
     setSuccess("");
     setAttempt(null);
     setSelected(null);
-    setPending({ action, title });
+    setPending({ action, title, scope: selected?.scope });
   }
   async function commit(event: React.FormEvent) {
     event.preventDefault();
@@ -629,7 +630,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
       {pending && (
         <Modal
           title={pending.title}
-          eyebrow="Admin"
+          eyebrow={pending.scope ? `Admin · ${pending.scope}` : "Admin"}
           onClose={() => {
             if (!busy) {
               setPending(null);
