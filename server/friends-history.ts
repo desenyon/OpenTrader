@@ -55,7 +55,10 @@ export function friendsHistory(
   series: "amm" | "trades",
 ): Candle[] {
   const market = store.market(userId, marketId); // Enforce the current group ACL before any other read.
-  if (market.exchange !== "FRIENDS")
+  if (
+    market.exchange !== "FRIENDS" &&
+    market.executionModel !== "SOURCE_SEEDED_LMSR"
+  )
     fail(422, "INVALID_EXCHANGE", "Friends history requires a Friends market");
   if (!market.outcomes.some((outcome) => outcome.id === outcomeId))
     fail(422, "INVALID_OUTCOME", "Unknown chart outcome");
@@ -99,6 +102,12 @@ export function friendsHistory(
         new Date(start * 1_000).toISOString(),
         new Date(end * 1_000).toISOString(),
       ) as unknown as { data: string; created_at: string }[];
+    if (market.exchange === "LIVE" && market.pricing?.active) {
+      const time = Date.parse(market.pricing.openedAt) / 1000;
+      const index = market.outcomes.findIndex((o) => o.id === outcomeId);
+      if (time >= start && time <= end)
+        observations.push({ time, price: market.pricing.prior[index]! });
+    }
     for (const row of rows.reverse()) {
       const time = Date.parse(row.created_at) / 1_000;
       if (!Number.isFinite(time) || time < start || time > end) continue;
@@ -114,10 +123,12 @@ export function friendsHistory(
         exchange?: unknown;
         status?: unknown;
         outcomes?: unknown;
+        pricing?: { active?: boolean };
       };
       if (
         value.id !== marketId ||
-        value.exchange !== "FRIENDS" ||
+        value.exchange !== market.exchange ||
+        (market.exchange === "LIVE" && value.pricing?.active !== true) ||
         !Array.isArray(value.outcomes)
       )
         continue;
