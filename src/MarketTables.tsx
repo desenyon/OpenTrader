@@ -182,9 +182,11 @@ export function MarketTables({
                   fills.error ||
                   (!user
                     ? "Sign in to view your exchange fills."
-                    : market?.exchange === "LIVE"
-                      ? "Your simulated fills appear here. External market volume is shown above."
-                      : "Trades by this group will appear here in real time.")
+                    : market?.executionModel === "SOURCE_SEEDED_LMSR"
+                      ? "OpenTrader trades in this market appear here."
+                      : market?.exchange === "LIVE"
+                        ? "Your simulated fills appear here. External market volume is shown above."
+                        : "Trades by this group will appear here in real time.")
                 }
               />
             )}
@@ -537,6 +539,23 @@ function MarketRules({
             market.description ||
             "See the original market source for the complete resolution condition."}
         </p>
+        {market.executionModel === "SOURCE_SEEDED_LMSR" && (
+          <p>
+            External odds set the opening price. OpenTrader credit trades then
+            move our odds through a fixed-liquidity market maker and peer
+            orders. Provider odds remain a separate live reference. A winning
+            share pays 1 CR; provider-confirmed voids pay 0.50 CR per share. No
+            order reaches the provider.
+            {market.pricing?.active && (
+              <>
+                {" "}
+                Liquidity b = {market.b}; maximum sponsor subsidy{" "}
+                {credits(market.pricing.maximumSubsidy)} CR, funded before
+                trading.
+              </>
+            )}
+          </p>
+        )}
         <div className="rules-grid">
           <div>
             <small>Source of truth</small>
