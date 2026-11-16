@@ -75,6 +75,9 @@ export function AuthDialog({
             await post(`/auth/${mode}`, {
               handle: form.get("handle"),
               password: form.get("password"),
+              ...(mode === "register"
+                ? { anonymousTrading: form.get("anonymousTrading") === "on" }
+                : {}),
             });
             onAuth();
           }}
@@ -91,6 +94,22 @@ export function AuthDialog({
               title="Start with a letter; use 3–30 letters, digits, underscores, or hyphens"
             />
           </Field>
+          {mode === "register" && (
+            <label className="signup-privacy">
+              <input
+                type="checkbox"
+                name="anonymousTrading"
+                aria-describedby="anonymous-trading-help"
+              />
+              <span>
+                <strong>Appear anonymous when trading</strong>
+                <small id="anonymous-trading-help">
+                  Use an alias in trade history and rankings. Admins can still
+                  see your account. Comments and market roles use your name.
+                </small>
+              </span>
+            </label>
+          )}
           <Field
             label="Password"
             hint={
@@ -1156,6 +1175,12 @@ export function ProfileDialog({
                 <p>Member since {date(bootstrap.user?.createdAt)}</p>
               </div>
             </div>
+            <p className="profile-trading-privacy">
+              Trading identity:{" "}
+              {bootstrap.user?.anonymousTrading
+                ? "Anonymous to other traders"
+                : "Your account name"}
+            </p>
             <div className="form-section-heading">Your isolated wallets</div>
             <div className="wallet-list">
               {bootstrap.wallets.map((wallet) => (

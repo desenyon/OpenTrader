@@ -63,7 +63,11 @@ const requestHash = (input: OrderInput) =>
   );
 const INITIAL = 10_000_000_000n;
 const TREASURY = 100_000_000_000n;
-type StoredUser = User & { password: string; salt: string };
+type StoredUser = User & {
+  password: string;
+  salt: string;
+  anonymitySeed?: string;
+};
 type StoredGroup = Omit<Group, "role" | "memberCount" | "treasury"> & {
   ownerId: string;
 };
@@ -358,6 +362,7 @@ export class Store {
       id: u.id,
       handle: u.handle,
       createdAt: u.createdAt,
+      anonymousTrading: u.anonymousTrading ?? false,
       platformRole: u.platformRole ?? "USER",
       status: u.status ?? "APPROVED",
     };
@@ -373,6 +378,21 @@ export class Store {
         "Your account must be approved and active to continue",
       );
     return this.publicUser(u);
+  }
+  private tradingIdentity(
+    userId: string,
+    exchange: Exchange,
+    groupId: string | null,
+  ) {
+    const user = this.state.users[userId]!;
+    if (!user.anonymousTrading) return { userId, handle: user.handle };
+    const opaque = hash(
+      `${user.anonymitySeed ?? user.password}:${exchange}:${groupId ?? "global"}`,
+    );
+    return {
+      userId: `anonymous:${opaque}`,
+      handle: `Anonymous-${opaque.slice(0, 6).toUpperCase()}`,
+    };
   }
   private session(userId: string) {
     const token = randomBytes(32).toString("base64url");
@@ -390,8 +410,12 @@ export class Store {
       ? this.publicUser(this.state.users[s.userId]!)
       : null;
   }
-  requestRegistration(handle: string, password: string) {
-    return this.register(handle, password, { pending: true });
+  requestRegistration(
+    handle: string,
+    password: string,
+    anonymousTrading = false,
+  ) {
+    return this.register(handle, password, { pending: true, anonymousTrading });
   }
   createAdmin(handle: string, password: string) {
     return this.transaction(() => {
@@ -421,7 +445,11 @@ export class Store {
   register(
     handle: string,
     password: string,
-    options: { pending?: boolean; admin?: boolean } = {},
+    options: {
+      pending?: boolean;
+      admin?: boolean;
+      anonymousTrading?: boolean;
+    } = {},
   ) {
     if (
       typeof handle !== "string" ||
@@ -448,6 +476,8 @@ export class Store {
       )
         fail(409, "HANDLE_EXISTS", "Handle is already registered");
       const u: StoredUser = {
+        anonymousTrading: options.anonymousTrading === true,
+        anonymitySeed: randomBytes(32).toString("hex"),
         platformRole: options.admin ? "ADMIN" : "USER",
         status: options.pending ? "PENDING" : "APPROVED",
         id: id(),
@@ -1864,7 +1894,14 @@ export class Store {
       )
       .slice(-500)
       .reverse()
-      .map(({ userId: _, ...f }) => f);
+      .map(({ userId: ownerId, ...f }) => ({
+        ...f,
+        handle: this.tradingIdentity(
+          ownerId,
+          this.state.markets[marketId]!.exchange,
+          this.state.markets[marketId]!.groupId,
+        ).handle,
+      }));
   }
   history(
     userId: string,
@@ -2838,8 +2875,7 @@ export class Store {
           }
         }
         return {
-          userId: user.id,
-          handle: user.handle,
+          ...this.tradingIdentity(user.id, exchange, groupId ?? null),
           netWorth: money(net),
           pnl: money(pnl),
           returnPercent: (Number(pnl) / Number(w.initial)) * 100,
@@ -2851,10 +2887,14 @@ export class Store {
           ).length,
           brierScore: count ? score / count : null,
           forecastCount: count,
-          joinedAt: member.joinedAt,
+          ...(!user.anonymousTrading ? { joinedAt: member.joinedAt } : {}),
         };
       })
-      .sort((a, b) => Number(b.netWorth) - Number(a.netWorth));
+      .sort(
+        (a, b) =>
+          Number(b.netWorth) - Number(a.netWorth) ||
+          a.userId.localeCompare(b.userId),
+      );
   }
   events(userId: string, marketId: string, after = -1) {
     this.refresh();
@@ -3033,16 +3073,6 @@ export class Store {
           );
         return JSON.parse(prior.result) as { id: string; ok: true };
       }
-      if (
-        typeof action.reason !== "string" ||
-        action.reason.trim().length < 5 ||
-        action.reason.length > 2000
-      )
-        fail(
-          422,
-          "REASON_REQUIRED",
-          "Explain the action in 5–2,000 characters",
-        );
       let before: unknown;
       if (action.type === "ACCOUNT_STATUS") {
         const u = this.state.users[action.targetId];
@@ -3082,12 +3112,7 @@ export class Store {
             if (order.userId === u.id && order.status === "OPEN")
               this.cancelInternal(order, "CANCELLED");
         } else this.initializeEconomy(u.id);
-        this.notify(
-          u.id,
-          "ACCOUNT",
-          "Account status changed",
-          `${action.status}: ${action.reason}`,
-        );
+        this.notify(u.id, "ACCOUNT", "Account status changed", action.status);
       } else if (
         action.type === "WALLET_ADJUSTMENT" ||
         action.type === "TREASURY_ADJUSTMENT"
@@ -3122,7 +3147,7 @@ export class Store {
             w.userId,
             "ECONOMY",
             "Credit adjustment",
-            `${money(amount)} play credits · ${action.reason}`,
+            `${money(amount)} play credits adjusted by an administrator`,
           );
         } else {
           if (!this.state.groups[action.targetId])
@@ -3171,7 +3196,7 @@ export class Store {
           order.userId,
           "ORDER",
           "Order cancelled by administrator",
-          action.reason,
+          "An administrator canceled this order.",
         );
       } else if (
         ["HALT_MARKET", "RESUME_MARKET", "CLOSE_MARKET"].includes(action.type)
@@ -3212,11 +3237,7 @@ export class Store {
               : "CLOSED";
         m.sequence++;
         m.updatedAt = this.now();
-        this.notifyMarket(
-          m,
-          "Administrator market action",
-          `${m.status}: ${action.reason}`,
-        );
+        this.notifyMarket(m, "Administrator market action", m.status);
       } else
         fail(422, "INVALID_ADMIN_ACTION", "Unsupported administrator action");
       const result = { id: id(), ok: true as const };
@@ -3243,6 +3264,7 @@ export class Store {
     offset = 0,
     limit = 50,
     search = "",
+    status = "",
   ): AdminReport {
     this.requireAdmin(actorId);
     offset = Math.max(0, Math.floor(offset));
@@ -3416,7 +3438,7 @@ export class Store {
         return {
           id: e.id,
           primary: handle(e.actor_id),
-          secondary: data.reason,
+          secondary: data.reason || e.action.toLowerCase().replaceAll("_", " "),
           scope: data.targetId ?? "Platform",
           status: e.action,
           amount: data.amount,
@@ -3439,6 +3461,7 @@ export class Store {
     else fail(422, "INVALID_SECTION", "Unknown report section");
     const needle = search.trim().toLowerCase();
     rows = rows
+      .filter((row) => !status || row.status === status.toUpperCase())
       .filter(
         (row) =>
           !needle ||

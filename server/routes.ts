@@ -22,6 +22,9 @@ const credentials = z.object({
   handle: z.string().max(30),
   password: z.string().max(200),
 });
+const registration = credentials.extend({
+  anonymousTrading: z.boolean().default(false),
+});
 const orderSchema = z.object({
   marketId: z.string().min(1),
   outcomeId: z.string().min(1),
@@ -124,8 +127,12 @@ export async function registerRoutes(
           "REGISTRATION_CLOSED",
           "Registration is closed on this server",
         );
-      const body = credentials.parse(request.body),
-        result = store.requestRegistration(body.handle, body.password);
+      const body = registration.parse(request.body),
+        result = store.requestRegistration(
+          body.handle,
+          body.password,
+          body.anonymousTrading,
+        );
       session(request, reply, result.token);
       return {
         ...store.bootstrap(result.user.id),

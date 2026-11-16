@@ -95,6 +95,7 @@ try {
     headers: { "Content-Type": "application/json", Origin: base },
     body: JSON.stringify({
       handle: "packaging_smoke",
+      anonymousTrading: true,
       password: "isolated-test-only-password",
     }),
   });
@@ -108,6 +109,7 @@ try {
   ).json();
   assert.equal(bootstrap.user.handle, "packaging_smoke");
   assert.equal(bootstrap.user.status, "PENDING");
+  assert.equal(bootstrap.user.anonymousTrading, true);
   assert.equal(bootstrap.user.platformRole, "USER");
   assert.equal(bootstrap.wallets.length, 0);
   assert.equal(bootstrap.groups.length, 0);
@@ -135,13 +137,13 @@ try {
       type: "ACCOUNT_STATUS",
       targetId: bootstrap.user.id,
       status: "APPROVED",
-      reason: "Isolated production smoke approval",
     }),
   });
   assert.equal(approve.status, 200);
   const approved = await (
     await fetch(`${base}/api/bootstrap`, { headers: pendingHeaders })
   ).json();
+  assert.equal(approved.user.anonymousTrading, true);
   assert.equal(approved.wallets.length, 2);
   assert.equal(approved.groups.length, 1);
   assert.ok(
@@ -157,7 +159,7 @@ try {
   ).json();
   assert.equal(reconciliation.balanced, true);
   console.log(
-    "Production smoke passed: executable bundle, HTTP health, static HTML, Brotli assets, immutable asset caching, hosted data gate, pending registration, CLI admin login, approval, isolated wallets, admin reporting and reconciliation.",
+    "Production smoke passed: executable bundle, HTTP health, static HTML, Brotli assets, immutable asset caching, hosted data gate, anonymous signup, CLI admin login, reason-free approval, isolated wallets, admin reporting and reconciliation.",
   );
 } finally {
   if (child.exitCode === null) {

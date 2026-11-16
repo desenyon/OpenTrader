@@ -2730,3 +2730,37 @@ td:first-child {
 .admin-header-actions {
   margin-left: auto;
 }
+
+.signup-privacy {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  background: var(--panel);
+}
+.signup-privacy input {
+  margin: 3px 0 0;
+  flex-shrink: 0;
+}
+.signup-privacy span {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.signup-privacy strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.signup-privacy small {
+  color: var(--muted);
+  line-height: 1.6;
+  font-size: 11px;
+}
+.profile-trading-privacy {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 24px;
+}

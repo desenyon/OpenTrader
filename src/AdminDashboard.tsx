@@ -9,7 +9,6 @@ import {
   Play,
   RefreshCw,
   Search,
-  ShieldCheck,
   X,
 } from "lucide-react";
 import type {
@@ -53,6 +52,16 @@ const sections: {
   { id: "markets", label: "Markets", amount: "Settlement escrow" },
   { id: "audit", label: "Admin history", amount: "Adjustment" },
 ];
+const categories: { label: string; sections: AdminSection[] }[] = [
+  { label: "Accounts", sections: ["users"] },
+  {
+    label: "Activity",
+    sections: ["bets", "fills", "positions", "settlements"],
+  },
+  { label: "Economy", sections: ["wallets", "treasuries"] },
+  { label: "Markets", sections: ["markets"] },
+  { label: "History", sections: ["audit"] },
+];
 function amount(value?: string) {
   return value === undefined
     ? "—"
@@ -66,14 +75,14 @@ function microcredits(value: string) {
 export default function AdminDashboard({ onBack }: { onBack: () => void }) {
   const [section, setSection] = useState<AdminSection>("users"),
     [search, setSearch] = useState(""),
+    [statusFilter, setStatusFilter] = useState(""),
     [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<AdminRow | null>(null),
     [pending, setPending] = useState<{
       action: AdminAction;
       title: string;
     } | null>(null);
-  const [reason, setReason] = useState(""),
-    [adjustment, setAdjustment] = useState(""),
+  const [adjustment, setAdjustment] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [success, setSuccess] = useState("");
@@ -100,7 +109,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
       : null,
   );
   const report = useResource<AdminReport>(
-    `/admin/report?section=${section}&offset=${offset}&limit=50&search=${encodeURIComponent(search)}`,
+    `/admin/report?section=${section}&offset=${offset}&limit=50&search=${encodeURIComponent(search)}&status=${section === "users" ? statusFilter : ""}`,
     15000,
   );
   const health = useResource<{
@@ -111,8 +120,8 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
     [key: string]: unknown;
   }>("/admin/reconciliation", 30000);
   const meta = sections.find((s) => s.id === section)!;
+  const category = categories.find((c) => c.sections.includes(section))!;
   function prepare(action: AdminAction, title: string) {
-    setReason("");
     setAdjustment("");
     setError("");
     setSuccess("");
@@ -125,7 +134,6 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
     if (!pending || busy) return;
     const action = {
       ...pending.action,
-      reason,
       ...(pending.action.type.endsWith("ADJUSTMENT")
         ? { amount: adjustment }
         : {}),
@@ -137,7 +145,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
     setError("");
     try {
       await post("/admin/actions", action, { "Idempotency-Key": key });
-      setSuccess(`${pending.title} completed. Recorded in admin history.`);
+      setSuccess(`${pending.title} completed.`);
       setPending(null);
       setSelected(null);
       refreshAll();
@@ -165,18 +173,47 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
           <button className="text-link" onClick={onBack}>
             <ArrowLeft size={14} /> Back to markets
           </button>
-          <h1>Admin dashboard</h1>
-          <p>Account access, exchange activity, and the play-credit economy.</p>
+          <h1>Admin</h1>
+          <p>Manage accounts, activity, and play credits.</p>
         </div>
-        <span className="admin-role">
-          <ShieldCheck size={15} /> Platform admin
-        </span>
+        <div className="admin-heading-actions">
+          <span className="admin-trading-status">
+            {health.data?.operatorPaused
+              ? "Trading paused"
+              : health.data?.guard.tradingEnabled
+                ? "Trading live"
+                : "Trading suspended"}
+          </span>{" "}
+          <button
+            className="button secondary"
+            disabled={!health.data}
+            onClick={() =>
+              prepare(
+                {
+                  type: "TRADING_PAUSE",
+                  paused: !health.data?.operatorPaused,
+                },
+                health.data?.operatorPaused
+                  ? "Resume trading"
+                  : "Pause trading",
+              )
+            }
+          >
+            {health.data?.operatorPaused ? (
+              <Play size={15} />
+            ) : (
+              <Pause size={15} />
+            )}
+            {health.data?.operatorPaused ? "Resume trading" : "Pause trading"}
+          </button>
+        </div>
       </div>
       <div className="admin-stats">
         <button
           onClick={() => {
             setSection("users");
-            setSearch("PENDING");
+            setSearch("");
+            setStatusFilter("PENDING");
             setOffset(0);
           }}
         >
@@ -214,42 +251,6 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
           </small>
         </div>
       </div>
-      <div className="admin-control">
-        <div>
-          <strong>
-            {health.data?.operatorPaused
-              ? "Trading paused"
-              : health.data?.guard.tradingEnabled
-                ? "Trading enabled"
-                : "Trading suspended"}
-          </strong>
-          <p>
-            {health.data?.guard.reason ||
-              "Changes affect new trades in both exchanges. Existing positions and settlements remain recorded."}
-          </p>
-        </div>
-        <button
-          className="button secondary"
-          disabled={!health.data}
-          onClick={() =>
-            prepare(
-              {
-                type: "TRADING_PAUSE",
-                paused: !health.data?.operatorPaused,
-                reason: "",
-              },
-              health.data?.operatorPaused ? "Resume trading" : "Pause trading",
-            )
-          }
-        >
-          {health.data?.operatorPaused ? (
-            <Play size={15} />
-          ) : (
-            <Pause size={15} />
-          )}
-          {health.data?.operatorPaused ? "Resume trading" : "Pause trading"}
-        </button>
-      </div>
       {error && !pending && <ErrorNote message={error} />}{" "}
       {success && (
         <p className="admin-success" role="status">
@@ -260,25 +261,61 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
         <ErrorNote message={report.error || health.error} />
       )}
       <nav className="admin-tabs" aria-label="Admin sections">
-        {sections.map((s) => (
+        {categories.map((item) => (
           <button
-            key={s.id}
-            className={section === s.id ? "active" : ""}
+            key={item.label}
+            className={category.label === item.label ? "active" : ""}
             onClick={() => {
-              setSection(s.id);
+              setSection(item.sections[0]!);
               setOffset(0);
               setSearch("");
+              setStatusFilter("");
               setSelected(null);
             }}
           >
-            {s.label}
-            {s.id === "users" && !!report.data?.summary.pending && (
+            {item.label}
+            {item.label === "Accounts" && !!report.data?.summary.pending && (
               <span>{report.data.summary.pending}</span>
             )}
           </button>
         ))}
       </nav>
+      {category.sections.length > 1 && (
+        <nav className="admin-subnav" aria-label={`${category.label} views`}>
+          {category.sections.map((id) => (
+            <button
+              key={id}
+              className={section === id ? "active" : ""}
+              onClick={() => {
+                setSection(id);
+                setOffset(0);
+                setSearch("");
+                setSelected(null);
+              }}
+            >
+              {sections.find((item) => item.id === id)!.label}
+            </button>
+          ))}
+        </nav>
+      )}
       <div className="admin-toolbar">
+        {section === "users" && (
+          <select
+            className="admin-account-filter"
+            aria-label="Account status"
+            value={statusFilter}
+            onChange={(event) => {
+              setStatusFilter(event.target.value);
+              setOffset(0);
+            }}
+          >
+            <option value="">All accounts</option>
+            <option value="PENDING">Pending</option>
+            <option value="APPROVED">Approved</option>
+            <option value="SUSPENDED">Suspended</option>
+            <option value="REJECTED">Rejected</option>
+          </select>
+        )}
         <label>
           <Search size={16} />
           <input
@@ -374,7 +411,6 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                               type: "ACCOUNT_STATUS",
                               targetId: row.id,
                               status: "APPROVED",
-                              reason: "",
                             },
                             `Approve ${row.primary}`,
                           )
@@ -391,7 +427,6 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                               type: "ACCOUNT_STATUS",
                               targetId: row.id,
                               status: "REJECTED",
-                              reason: "",
                             },
                             `Reject ${row.primary}`,
                           )
@@ -447,10 +482,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
         </div>
       </div>
       <p className="admin-footnote">
-        PLAY CREDITS · Free, fictional, and nonredeemable. Payout is the gross
-        settlement amount; realized P&amp;L accounts for acquisition costs. Live
-        and each private group have separate wallets. Platform admins can
-        inspect activity across groups.
+        Play credits · No cash value. Admin actions are saved automatically.
       </p>
       {selected && (
         <Modal
@@ -492,7 +524,6 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                           type: "ACCOUNT_STATUS",
                           targetId: selected.id,
                           status: "APPROVED",
-                          reason: "",
                         },
                         `Approve ${selected.primary}`,
                       )
@@ -509,7 +540,6 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                           type: "ACCOUNT_STATUS",
                           targetId: selected.id,
                           status: "SUSPENDED",
-                          reason: "",
                         },
                         `Suspend ${selected.primary}`,
                       )
@@ -531,7 +561,6 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                             : "TREASURY_ADJUSTMENT",
                         targetId: selected.id,
                         amount: "",
-                        reason: "",
                       },
                       `Adjust ${section === "wallets" ? "wallet" : "group budget"}`,
                     )
@@ -559,7 +588,6 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                       {
                         type: "CANCEL_ORDER",
                         targetId: selected.id,
-                        reason: "",
                       },
                       "Cancel order",
                     )
@@ -581,7 +609,6 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                               ? "HALT_MARKET"
                               : "RESUME_MARKET",
                           targetId: selected.id,
-                          reason: "",
                         },
                         selected.status === "OPEN"
                           ? "Halt market"
@@ -601,7 +628,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
       {pending && (
         <Modal
           title={pending.title}
-          eyebrow="Audited administrator action"
+          eyebrow="Admin"
           onClose={() => {
             if (!busy) {
               setPending(null);
@@ -619,7 +646,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                 : pending.action.type === "ACCOUNT_STATUS" &&
                     pending.action.status === "APPROVED"
                   ? "First approval creates separate Live and Friends wallets with 10,000 play credits each. Reactivation never issues a second allocation."
-                  : "This action is recorded with your identity and reason. Suspension and halting cancel open orders and preserve economic history."}
+                  : "Changes are saved automatically. Existing fills and holdings remain recorded."}
             </p>
             {pending.action.type.endsWith("ADJUSTMENT") && (
               <Field
@@ -636,20 +663,9 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
                 />
               </Field>
             )}
-            <Field label="Reason">
-              <textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                required
-                minLength={5}
-                maxLength={2000}
-                rows={3}
-                placeholder="Explain why this action is needed"
-              />
-            </Field>
             {error && <ErrorNote message={error} />}
             <button type="submit" className="button primary" disabled={busy}>
-              {busy ? "Saving…" : "Confirm action"}
+              {busy ? "Saving…" : pending.title}
             </button>
           </form>
         </Modal>

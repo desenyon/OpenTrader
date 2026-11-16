@@ -6,6 +6,7 @@ export interface User {
   handle: string;
   createdAt: string;
   platformRole?: "ADMIN" | "USER";
+  anonymousTrading?: boolean;
   status?: import("./admin").AccountStatus;
 }
 export interface Group {
@@ -231,7 +232,7 @@ export interface LeaderboardRow {
   tradeCount: number;
   brierScore: number | null;
   forecastCount: number;
-  joinedAt: string;
+  joinedAt?: string;
 }
 export interface Member {
   id: string;

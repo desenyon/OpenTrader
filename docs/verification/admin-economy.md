@@ -2,6 +2,8 @@
 
 November 15, 2026 (America/Los_Angeles). Built from browse-first commit `c52b826`.
 
+The later [anonymous trading and admin cleanup update](trading-privacy.md) removes the admin reason requirement and adds signup privacy controls. The checks below describe the original administration release.
+
 ## Audit findings and fixes
 
 1. Settlement escrow reconciliation compared integer microcredits with whole shares, missing a factor of 1,000,000. A balanced fixture transfer leaving 1 CR against 100 outstanding YES shares incorrectly passed every check. The guard now measures the full maximum payout liability in microcredits. This was a confirmed false negative in detection; normal trades were not shown to create this shortage.

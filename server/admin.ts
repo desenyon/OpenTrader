@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireUser } from "./auth.js";
 import { Store } from "./store.js";
-const reason = z.string().trim().min(5).max(2000),
+const reason = z.string().trim().max(2000).optional(),
   targetId = z.string().min(1).max(250);
 const adjustment = z.object({
   type: z.enum(["WALLET_ADJUSTMENT", "TREASURY_ADJUSTMENT"]),
@@ -47,6 +47,7 @@ const querySchema = z.object({
   offset: z.coerce.number().int().min(0).max(1000000).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   search: z.string().max(200).default(""),
+  status: z.string().max(40).default(""),
 });
 export async function registerAdminRoutes(
   app: FastifyInstance,
@@ -56,7 +57,14 @@ export async function registerAdminRoutes(
   app.get("/api/admin/report", async (request) => {
     const actor = store.requireAdmin(requireUser(request, store).id);
     const q = querySchema.parse(request.query);
-    return store.adminReport(actor.id, q.section, q.offset, q.limit, q.search);
+    return store.adminReport(
+      actor.id,
+      q.section,
+      q.offset,
+      q.limit,
+      q.search,
+      q.status,
+    );
   });
   app.get("/api/admin/reconciliation", async (request) => {
     store.requireAdmin(requireUser(request, store).id);

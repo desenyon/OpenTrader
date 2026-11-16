@@ -9,7 +9,7 @@ export type AdminSection =
   | "markets"
   | "treasuries"
   | "audit";
-export type AdminAction = { reason: string } & (
+export type AdminAction = { reason?: string } & (
   | { type: "ACCOUNT_STATUS"; targetId: string; status: AccountStatus }
   | {
       type: "WALLET_ADJUSTMENT" | "TREASURY_ADJUSTMENT";

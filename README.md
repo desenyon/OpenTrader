@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-Open **http://localhost:3000**. Request an account with a handle and a password of at least 12 characters. A platform administrator must approve it before trading or joining groups. First approval creates independent 10,000-credit Live and Friends wallets and a private group; repeat approvals and reactivations never reissue credits. Existing accounts remain approved users. There is no anonymous trading account, hidden demo balance, or generated source history.
+Open **http://localhost:3000**. Request an account with a handle and a password of at least 12 characters. A platform administrator must approve it before trading or joining groups. First approval creates independent 10,000-credit Live and Friends wallets and a private group; repeat approvals and reactivations never reissue credits. Existing accounts remain approved users. There is no guest trading account, hidden demo balance, or generated source history. During signup, **Appear anonymous when trading** hides your name in trade history and rankings behind a stable alias for each economy. Admins can still attribute activity; memberships, comments and creator/resolver roles remain named.
 
 For a private market, invite friends from **Friends → Manage group → Invite**. Appoint an independent moderator in **Manage group → Members**, select a separate nontrading resolver in the creation form, and have the moderator approve the draft. New markets have funded LMSR liquidity even without peer orders.
 
@@ -25,13 +25,13 @@ npm run admin:create -- --handle admin
 
 The CLI loads `.env`, respects `DATABASE_PATH`, and accepts explicit `--database` and `--credentials` paths. It generates a strong password and saves it to `data/admin-credentials.txt` with owner-only permissions; it never prints the password or overwrites an existing receipt. Keep this ignored file private. For a production installation without development dependencies, run `node dist-server/create-admin.js --handle admin` after building. There is no public admin registration or first-user elevation.
 
-Sign in, then choose **More options → Admin dashboard**, or open **http://localhost:3000/#/admin**. The dashboard includes:
+Sign in, then choose **More options → Admin dashboard**, or open **http://localhost:3000/#/admin**. The dashboard has five sections—Accounts, Activity, Economy, Markets and History—with compact subviews. It includes:
 
 - Account requests, approval/rejection, suspension/reactivation, and last-admin protection.
 - All placed orders, individual fills, current/closed positions, gross settlement payouts, realized P&L, and exact wallet cash journals. Search and paginate across users and scopes; export the current report page.
-- Signed credit allocations/reclaims to a specific wallet or a group's free sponsor budget. Every action needs a reason and a repeat-safe request key. Reclaims cannot spend locked cash, shares or market escrow. Initial season allocations remain visible and unchanged; admin allocations/reclaims are excluded from trading returns.
+- Signed credit allocations/reclaims to a specific wallet or a group's free sponsor budget. Actions use repeat-safe request keys and are recorded automatically; no reason is required. Reclaims cannot spend locked cash, shares or market escrow. Initial season allocations remain visible and unchanged; admin allocations/reclaims are excluded from trading returns.
 - Trading pause/resume across both exchanges; individual order cancellation; Friends market halt/resume. Published market rules, frozen deadlines and independent settlement review still apply. Source-controlled Live markets retain provider governance.
-- Read-only reconciliation status and immutable operator history with actor, reason and previous state. A reconciliation circuit-breaker latch requires repair and a server restart; the dashboard cannot override it.
+- Read-only reconciliation status and immutable operator history with actor, action, target and previous state. A reconciliation circuit-breaker latch requires repair and a server restart; the dashboard cannot override it.
 
 Suspension immediately blocks authenticated trading and group data, cancels open orders and releases their locks. Owned positions remain recorded and settle normally; reactivation restores access without a new allocation. Pending or rejected accounts receive no wallets or group data. Platform administrators can inspect trading activity across groups; the registration screen discloses this supervision. Admin creation does not silently promote a group owner.
 
@@ -95,6 +95,6 @@ This implementation uses whole contracts and binary Friends markets. Arbitrary e
 
 SQLite transactions, the durable journal, and derived projections run on one host. The 100-user burst shows event-loop queuing under heavy simultaneous load. Multi-host deployment, production availability commitments, recovery drills, staffed escalation and provider rights require separate operational verification. Do not run stateless replicas against independent database copies.
 
-See the [admin and economy audit verification](docs/verification/admin-economy.md), [redesign verification](docs/verification/redesign.md) and [original engine verification record](docs/verification/README.md) for tested flows and remaining operating limits.
+See the [anonymous trading and admin cleanup verification](docs/verification/trading-privacy.md), [admin and economy audit verification](docs/verification/admin-economy.md), [redesign verification](docs/verification/redesign.md) and [original engine verification record](docs/verification/README.md) for tested flows and remaining operating limits.
 
 The original proposals and generated concepts remain under [docs/design](docs/design/) as historical work. The November 15 browse-first redesign supersedes the terminal interface and earlier concepts. See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency licenses, chart attribution and UI refinement skill credit.
