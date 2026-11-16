@@ -1,0 +1,26 @@
+name: Feature proposal
+description: Suggest a focused improvement to OpenTrader.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the user, the exchange or admin context, and the current friction.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain what someone would see or do. Screenshots or sketches are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Economy, privacy, or governance impact
+      description: Note any effects on wallets, matching, data rights, anonymity, or settlement. Write "None" when applicable.
+    validations:
+      required: true
