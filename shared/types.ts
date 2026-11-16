@@ -62,6 +62,7 @@ export interface Resolution {
   reviews: { userId: string; decision: string; rationale: string }[];
 }
 export interface Market {
+  resolutionMode?: "CREATOR" | "REVIEWED";
   executionModel?: "EXTERNAL_SIM" | "SOURCE_SEEDED_LMSR";
   engineVersion?: number;
   reference?: {
