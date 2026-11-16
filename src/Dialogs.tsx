@@ -20,7 +20,6 @@ import type {
 } from "../shared/types";
 import { api, patch, post, refreshAll, useResource } from "./api";
 import { downloadJournal } from "./journal";
-import { BINARY_VOID_POLICY } from "../shared/rules";
 import { PrivacyRequest } from "./Moderation";
 import { credits, date, errorMessage, percent } from "./utils";
 import {
@@ -659,52 +658,33 @@ export function CreateMarketDialog({
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
-  const members = useResource<Member[]>(
-    group ? `/groups/${group.id}/members` : null,
-  );
-  const [b, setB] = useState("100");
-  const [resolverId, setResolverId] = useState("");
-  const eligibleResolvers =
-    members.data?.filter((m) => m.id !== user.id && m.status === "ACTIVE") ||
-    [];
-  const resolver = resolverId || eligibleResolvers[0]?.id || "";
+  const [closeAt] = useState(() => {
+    const tomorrow = new Date(Date.now() + 24 * 3600_000);
+    return new Date(tomorrow.getTime() - tomorrow.getTimezoneOffset() * 60000)
+      .toISOString()
+      .slice(0, 16);
+  });
   return (
     <Modal
-      title="Make the question count."
-      eyebrow={`CREATE MARKET · ${group?.name || "FRIENDS"}`}
+      title="Create a bet"
+      eyebrow={group?.name ?? "FRIENDS"}
       onClose={onClose}
-      wide
     >
       <div className="modal-body">
         {!group ? (
           <Empty
-            title="Select a Friends group first"
-            detail="Group markets stay private to their members."
+            title="Choose a Friends group first"
+            detail="Your bets stay private to the group."
           />
         ) : (
           <ActionForm
-            submitLabel="Submit market for approval"
+            submitLabel="Create bet"
             onSubmit={(form) =>
               post<Market>("/markets", {
                 groupId: group.id,
                 question: form.get("question"),
-                description: form.get("description"),
-                category: form.get("category"),
                 closeAt: new Date(String(form.get("closeAt"))).toISOString(),
-                b: Number(b),
-                resolverId: form.get("resolverId"),
-                rules: {
-                  condition: form.get("condition"),
-                  source: form.get("source"),
-                  evidence: form.get("evidence"),
-                  observationAt: new Date(
-                    String(form.get("observationAt")),
-                  ).toISOString(),
-                  voidPolicy: form.get("voidPolicy"),
-                  disputeHours: Number(form.get("disputeHours")),
-                  resolverId: form.get("resolverId"),
-                  reviewerIds: form.getAll("reviewerIds"),
-                },
+                description: form.get("description") || "",
               })
             }
             onSuccess={(result) => {
@@ -712,215 +692,39 @@ export function CreateMarketDialog({
               onCreated((result as Market).id);
             }}
           >
-            {eligibleResolvers.length === 0 && (
-              <div className="warning-note">
-                Invite another group member before creating a market. The
-                creator cannot resolve or approve their own question. An
-                independent moderator approves the draft.
-              </div>
-            )}
-            <Field
-              label="Question"
-              hint="A precise, binary question that can be objectively resolved."
-            >
+            <Field label="What’s the bet?">
               <input
                 name="question"
-                placeholder="Will … happen before …?"
+                placeholder="Will we win on Friday?"
                 required
-                minLength={10}
+                minLength={3}
                 maxLength={240}
+                autoFocus
               />
             </Field>
-            <div className="form-grid">
-              <Field label="Category">
-                <select name="category">
-                  <option>Politics</option>
-                  <option>Sports</option>
-                  <option>Technology</option>
-                  <option>Economy</option>
-                  <option>Culture</option>
-                  <option>Science</option>
-                  <option>Personal</option>
-                  <option>Other</option>
-                </select>
-              </Field>
-              <Field label="Trading closes">
-                <input name="closeAt" type="datetime-local" required />
-              </Field>
-            </div>
-            <Field label="Description">
-              <textarea
-                name="description"
-                rows={2}
-                maxLength={2000}
-                placeholder="Add useful context for your group."
-              />
-            </Field>
-            <div className="form-section-heading">Resolution contract</div>
-            <Field label="Exact YES condition">
-              <textarea
-                name="condition"
-                rows={2}
+            <Field label="Betting closes">
+              <input
+                name="closeAt"
+                type="datetime-local"
+                defaultValue={closeAt}
                 required
-                minLength={10}
-                placeholder="Resolves YES if the official source reports…"
               />
             </Field>
-            <div className="form-grid">
-              <Field label="Authoritative source">
-                <input
-                  name="source"
-                  placeholder="https://official-source.example"
-                  required
+            <details className="simple-bet-details">
+              <summary>Add details (optional)</summary>
+              <Field label="Details">
+                <textarea
+                  name="description"
+                  rows={3}
+                  maxLength={2000}
+                  placeholder="Anything your friends should know."
                 />
               </Field>
-              <Field label="Observation time">
-                <input name="observationAt" type="datetime-local" required />
-              </Field>
-            </div>
-            <Field label="Required evidence">
-              <input
-                name="evidence"
-                required
-                placeholder="Official result page, published report, or archived statement"
-              />
-            </Field>
-            <Field
-              label="Void / ambiguity policy"
-              hint="Fixed binary policy. Review this before submitting the market."
-            >
-              <textarea
-                name="voidPolicy"
-                rows={3}
-                required
-                readOnly
-                value={BINARY_VOID_POLICY}
-              />
-            </Field>
-            <div className="form-grid">
-              <Field
-                label="Independent resolver"
-                hint="The creator and anyone who trades cannot resolve a market."
-              >
-                <select
-                  name="resolverId"
-                  required
-                  value={resolver}
-                  onChange={(event) => setResolverId(event.target.value)}
-                >
-                  {!eligibleResolvers.length && (
-                    <option value="">Invite another member first</option>
-                  )}
-                  {eligibleResolvers.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      @{m.handle}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Dispute window">
-                <select name="disputeHours" defaultValue="24">
-                  <option value="24">24 hours · fixed</option>
-                </select>
-              </Field>
-            </div>
-            <Field
-              label="Independent reviewers"
-              hint="Choose members other than the creator and resolver. Two impartial confirmations are needed for a disputed result; no quorum triggers neutral void."
-            >
-              <select
-                name="reviewerIds"
-                multiple
-                size={Math.min(3, Math.max(2, members.data?.length || 2))}
-              >
-                {members.data
-                  ?.filter(
-                    (m) =>
-                      m.id !== user.id &&
-                      m.id !== resolver &&
-                      m.status === "ACTIVE",
-                  )
-                  .map((m) => (
-                    <option key={m.id} value={m.id}>
-                      @{m.handle}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-            <div className="form-section-heading">Market liquidity</div>
-            <Field
-              label="Liquidity parameter (b)"
-              hint="Higher b makes prices more stable and uses more treasury credit."
-            >
-              <input
-                name="b"
-                type="number"
-                min="10"
-                max="10000"
-                step="1"
-                value={b}
-                onChange={(e) => setB(e.target.value)}
-                required
-              />
-            </Field>
-            <div className="liquidity-impact">
-              <Shield size={16} />
-              <p>
-                Required binary LMSR reserve:{" "}
-                <strong>
-                  {Number(b) > 0
-                    ? credits(
-                        Math.ceil(Number(b) * Math.log(2) * 1e6) / 1e6 + 1,
-                      )
-                    : "—"}{" "}
-                  CR
-                </strong>
-                <br />
-                <span>
-                  Includes 1 CR rounding allowance. Reserved from the group
-                  treasury, currently {credits(group.treasury)} CR.
-                </span>
-              </p>
-            </div>
-            <div className="liquidity-preview">
-              <div className="form-section-heading">Starting price impact</div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Buy YES</th>
-                    <th>Indicative cost · CR</th>
-                    <th>YES after trade</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[10, 100, 500].map((quantity) => {
-                    const depth = Number(b);
-                    const t = quantity / depth;
-                    const supported = depth >= 10 && depth <= 10000 && t <= 30;
-                    const cost = supported
-                      ? depth * (t + Math.log1p(Math.exp(-t)) - Math.LN2)
-                      : 0;
-                    return (
-                      <tr key={quantity}>
-                        <td>{quantity} shares</td>
-                        <td>
-                          {supported
-                            ? credits(cost)
-                            : "Outside supported range"}
-                        </td>
-                        <td>
-                          {supported ? percent(1 / (1 + Math.exp(-t))) : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              <p className="form-footnote">
-                Illustrative uniform 50/50 starting state, no peers or fees.
-                Only an exact server quote can authorize a trade.
-              </p>
-            </div>
+            </details>
+            <p className="form-footnote">
+              Opens straight away at 50/50. You can trade and decide the result;
+              group admins can help. Play credits only.
+            </p>
           </ActionForm>
         )}
       </div>
