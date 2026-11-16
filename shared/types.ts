@@ -62,6 +62,21 @@ export interface Resolution {
   reviews: { userId: string; decision: string; rationale: string }[];
 }
 export interface Market {
+  executionModel?: "EXTERNAL_SIM" | "SOURCE_SEEDED_LMSR";
+  engineVersion?: number;
+  reference?: {
+    outcomes: Outcome[];
+    timestamp: string;
+    status: string;
+    volume: number;
+  };
+  pricing?: {
+    active: boolean;
+    prior: number[];
+    anchorAt: string;
+    openedAt: string;
+    maximumSubsidy: string;
+  };
   id: string;
   exchange: Exchange;
   provider: "polymarket" | "kalshi" | null;
@@ -122,6 +137,7 @@ export interface Fill {
   orderId?: string;
 }
 export interface Order {
+  createdSequence?: number;
   id: string;
   marketId: string;
   outcomeId: string;
@@ -158,6 +174,8 @@ export interface Position {
   valuationNote?: string;
 }
 export interface Quote {
+  executionModel?: Market["executionModel"];
+  engineVersion?: number;
   id: string;
   marketId: string;
   outcomeId: string;
@@ -167,6 +185,7 @@ export interface Quote {
   estimatedCash: string;
   averagePrice: number;
   afterProbability: number;
+  openingProbability?: number;
   expiresAt: string;
   sequence: number;
   executable: boolean;
@@ -178,6 +197,7 @@ export interface Quote {
   }[];
 }
 export interface OrderInput {
+  engineVersion?: number;
   marketId: string;
   outcomeId: string;
   side: Side;
