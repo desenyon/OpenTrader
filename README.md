@@ -100,15 +100,17 @@ Fresh captures of the running app with demo accounts and markets. Click an image
 
 ## Two exchanges. One place.
 
-|                | Live Markets                                      | Friends Exchange                                     |
-| -------------- | ------------------------------------------------- | ---------------------------------------------------- |
-| **Questions**  | Public Polymarket/Kalshi markets                  | Original questions for approved group members        |
-| **Prices**     | Validated provider bid/ask and depth              | Fixed-liquidity LMSR + price-time peer orders        |
-| **Execution**  | Counterfactual paper fills; never sent externally | Owned shares, protected orders, and locked resources |
-| **Economy**    | One account-level Live wallet                     | A separate wallet for each group                     |
-| **Resolution** | Verified provider-final result                    | Independent resolver, evidence, and dispute review   |
+|                | Live Markets                                                  | Friends Exchange                                     |
+| -------------- | ------------------------------------------------------------- | ---------------------------------------------------- |
+| **Questions**  | Public Polymarket/Kalshi markets                              | Original questions for approved group members        |
+| **Prices**     | External opening odds → credit-driven OpenTrader LMSR + peers | Fixed-liquidity LMSR + price-time peer orders        |
+| **Execution**  | Funded local fills; never sent externally                     | Owned shares, protected orders, and locked resources |
+| **Economy**    | One account-level Live wallet                                 | A separate wallet for each group                     |
+| **Resolution** | Verified provider-final result                                | Independent resolver, evidence, and dispute review   |
 
 Funds and positions stay inside their own exchange and group. Market prices express what trading implies; they do not guarantee an outcome.
+
+New binary Live markets freeze a validated provider bid/ask midpoint as their opening prior, then OpenTrader buys/sells move our price. Provider odds remain visible beside it. A separate finite Live sponsor pool backs every issued share; it cannot spend Friends balances. Existing markets with paper fills retain their original source-book simulation rules. [Economy rules and implementation](docs/design/credit-driven-economy.md).
 
 ### Built for making a call
 
@@ -125,7 +127,7 @@ The app supports desktop/mobile layouts, light/dark themes, keyboard-accessible 
 
 The admin dashboard has five sections: **Accounts · Activity · Economy · Markets · History**.
 
-Approve or suspend accounts, inspect placed orders and fills, review holdings and gross payouts alongside realized profit, adjust a specific wallet or free group budget, pause trading, cancel open orders, and halt/resume Friends markets.
+Approve or suspend accounts, inspect placed orders and fills, review holdings and gross payouts alongside realized profit, adjust a specific wallet or free Live/group liquidity budget, pause trading, cancel open orders, and halt/resume local Live and Friends markets.
 
 Admin actions need no written reason. Actor, action, target, and prior state are recorded automatically. Reclaims cannot spend locked funds or reserved market subsidy. Suspension returns order locks while retaining positions for settlement. The last approved admin cannot be suspended.
 
@@ -135,7 +137,7 @@ Admin actions need no written reason. Actor, action, target, and prior state are
 flowchart LR
     UI[React + TypeScript] --> API[Fastify · auth + group access]
     API --> Friends["Friends engine<br/>LMSR + peer order book"]
-    API --> Live[Live paper simulator]
+    API --> Live[Source-seeded Live engine + legacy simulator]
     Sources[Permission-gated providers] --> Live
     Friends --> Ledger[("SQLite WAL<br/>exact journal + projections")]
     Live --> Ledger
@@ -173,6 +175,9 @@ Friends works independently of provider feeds. **Hosted external-data mode defau
 See the provider references in [third-party notices](THIRD_PARTY_NOTICES.md) and the [implementation verification](docs/verification/README.md). Source corrections require separately appointed, historically nontrading reviewers and a finite correction reserve.
 
 ## Documentation
+
+- [Credit-driven Live economy and rules](docs/design/credit-driven-economy.md)
+- [November 16 tests and performance evidence](docs/verification/credit-economy.md)
 
 | Start here                                                           | What it covers                                                        |
 | -------------------------------------------------------------------- | --------------------------------------------------------------------- |
