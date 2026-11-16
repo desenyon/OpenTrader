@@ -43,9 +43,12 @@ export const post = <T>(
 export const patch = <T>(path: string, body: unknown) =>
   api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
 
-const listeners = new Set<() => void>();
+const listeners = new Set<(invalidate: boolean) => void>();
 export function refreshAll() {
-  for (const listener of listeners) listener();
+  for (const listener of listeners) listener(true);
+}
+function refreshBackground() {
+  for (const listener of listeners) listener(false);
 }
 export function useResource<T>(path: string | null, interval = 0) {
   const [data, setData] = useState<T>();
@@ -53,14 +56,18 @@ export function useResource<T>(path: string | null, interval = 0) {
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const current = useRef(path);
-  const requestRef = useRef<() => void>(() => {});
-  const refresh = useCallback(() => requestRef.current(), []);
+  const requestRef = useRef<(invalidate?: boolean) => void>(() => {});
+  const refresh = useCallback(() => requestRef.current(true), []);
+  const refreshEvent = useCallback(
+    (invalidate: boolean) => requestRef.current(invalidate),
+    [],
+  );
   useEffect(() => {
-    listeners.add(refresh);
+    listeners.add(refreshEvent);
     return () => {
-      listeners.delete(refresh);
+      listeners.delete(refreshEvent);
     };
-  }, [refresh]);
+  }, [refreshEvent]);
   useEffect(() => {
     if (current.current !== path) {
       current.current = path;
@@ -87,9 +94,9 @@ export function useResource<T>(path: string | null, interval = 0) {
         ),
       setLoading,
     );
-    const fetchResource = () => {
+    const fetchResource = (invalidate = false) => {
       if (document.visibilityState === "hidden") return;
-      void resource.refresh();
+      void resource.refresh(invalidate);
     };
     requestRef.current = fetchResource;
     void fetchResource();
@@ -97,7 +104,7 @@ export function useResource<T>(path: string | null, interval = 0) {
       ? window.setInterval(() => void fetchResource(), interval)
       : undefined;
     const visible = () => {
-      if (document.visibilityState === "visible") void fetchResource();
+      if (document.visibilityState === "visible") void fetchResource(true);
     };
     document.addEventListener("visibilitychange", visible);
     return () => {
@@ -119,9 +126,9 @@ export function useEvents(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     const source = new EventSource("/api/events");
-    source.onmessage = () => refreshAll();
+    source.onmessage = () => refreshBackground();
     for (const type of ["market", "order", "fill", "notification", "refresh"])
-      source.addEventListener(type, () => refreshAll());
+      source.addEventListener(type, () => refreshBackground());
     return () => source.close();
   }, [enabled]);
 }
