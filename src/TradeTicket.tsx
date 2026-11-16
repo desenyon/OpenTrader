@@ -75,8 +75,12 @@ export function TradeTicket({
     setError("");
     setReceipt(null);
     if (outcome) setPrice((outcome.probability * 100).toFixed(2));
-    if (market?.exchange === "LIVE") setMode("IOC");
-  }, [market?.id, outcome?.id, side, mode]);
+    if (
+      market?.exchange === "LIVE" &&
+      market.executionModel !== "SOURCE_SEEDED_LMSR"
+    )
+      setMode("IOC");
+  }, [market?.id, market?.executionModel, outcome?.id, side, mode]);
   useEffect(() => {
     setQuote(null);
     setError("");
@@ -173,6 +177,7 @@ export function TradeTicket({
           quantity: amount,
           limitPrice: effectiveLimit.toFixed(4),
           timeInForce: mode,
+          engineVersion: quote!.engineVersion ?? 1,
           ...(mode === "IOC" ? quoteProtection : {}),
           ...(side === "BUY"
             ? { maxTotalCost: hardProtection }
@@ -464,7 +469,8 @@ export function TradeTicket({
             Order options
             <ChevronDown size={12} />
           </summary>
-          {market?.exchange === "FRIENDS" && (
+          {(market?.exchange === "FRIENDS" ||
+            market?.executionModel === "SOURCE_SEEDED_LMSR") && (
             <label className="limit-order-toggle">
               <input
                 type="checkbox"
@@ -649,6 +655,12 @@ export function TradeTicket({
                   </div>
                 </>
               )}
+              {quote.openingProbability !== undefined && (
+                <div>
+                  <dt>Opening OpenTrader odds</dt>
+                  <dd>{percent(quote.openingProbability)}</dd>
+                </div>
+              )}
               <div>
                 <dt>Probability after fill</dt>
                 <dd>{percent(quote.afterProbability)}</dd>
@@ -710,9 +722,14 @@ export function TradeTicket({
             <p className="form-footnote">
               This transaction uses fictional credits in your{" "}
               {market?.exchange === "LIVE" ? "Live" : "selected Friends group"}{" "}
-              wallet.
-              {market?.exchange === "LIVE" &&
-                " Simulation fees are zero; provider trading fees are not modeled."}
+              wallet.{" "}
+              {quote.openingProbability !== undefined &&
+                "Opening odds use the source bid/ask midpoint, bounded to 1–99%. "}
+              {market?.executionModel === "SOURCE_SEEDED_LMSR"
+                ? " Your trades move OpenTrader odds. Provider odds are a separate reference. Zero transaction fees."
+                : market?.exchange === "LIVE"
+                  ? " Counterfactual source-book estimate. Simulation fees are zero; provider fees are not modeled."
+                  : ""}
             </p>
           </div>
         </Modal>
