@@ -58,6 +58,7 @@ export async function createApp(
   const store =
     options.store ??
     new Store({
+      liveCommunity: process.env.LIVE_COMMUNITY_ENABLED !== "false",
       path:
         options.databasePath ??
         process.env.DATABASE_PATH ??
