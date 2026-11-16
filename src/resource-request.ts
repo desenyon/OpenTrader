@@ -6,25 +6,33 @@ export function createResourceRequest<T>(
 ) {
   let active = true;
   let pending: Promise<void> | undefined;
+  let invalidated = false;
   return {
-    refresh(): Promise<void> {
+    refresh(invalidate = false): Promise<void> {
       if (!active) return Promise.resolve();
-      if (pending) return pending;
+      if (pending) {
+        invalidated ||= invalidate;
+        return pending;
+      }
       loading(true);
-      pending = Promise.resolve()
-        .then(load)
-        .then(
-          (value) => {
-            if (active) success(value);
-          },
-          (reason) => {
-            if (active) failure(reason);
-          },
-        )
-        .finally(() => {
+      pending = Promise.resolve().then(async () => {
+        try {
+          do {
+            invalidated = false;
+            try {
+              const value = await load();
+              if (active && !invalidated) success(value);
+            } catch (reason) {
+              if (active && !invalidated) failure(reason);
+            }
+          } while (active && invalidated);
+        } finally {
+          // Clear synchronously with completing the drain. A later microtask
+          // must start a fresh request, rather than attach to a finished one.
           pending = undefined;
           if (active) loading(false);
-        });
+        }
+      });
       return pending;
     },
     dispose() {
