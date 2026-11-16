@@ -1,59 +1,136 @@
-# OpenTrader
+<p align="center">
+  <img src="docs/brand/opentrader-banner.svg" alt="OpenTrader — prediction markets for your circle" width="100%" />
+</p>
 
-A self-hosted prediction market with two separate play-credit economies. Start with a searchable market grid, open a question, choose an outcome, and review a protected quote before confirming. Live and Friends have distinct balances. Desktop/mobile layouts, light/dark themes, and keyboard-accessible dialogs are included.
+<p align="center">
+  <a href="https://github.com/desenyon/OpenTrader/actions/workflows/ci.yml"><img src="https://github.com/desenyon/OpenTrader/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
+  <img src="https://img.shields.io/badge/Node.js-24%2B-a9c7ff?style=flat&amp;labelColor=17191d" alt="Node.js 24 or newer" />
+  <img src="https://img.shields.io/badge/currency-play%20credits-8bc7b4?style=flat&amp;labelColor=17191d" alt="Fictional play credits only" />
+</p>
 
-## Run locally
+<p align="center">
+  <a href="#get-started">Get started</a> ·
+  <a href="#two-exchanges-one-place">The exchanges</a> ·
+  <a href="#behind-the-market">Architecture</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="CONTRIBUTING.md">Contribute</a>
+</p>
 
-Requires Node.js 24 or newer; verification used Node 26.11.1. No API key, paid model, hosted database, or cloud account is required.
+OpenTrader is a self-hosted prediction market for friend groups. Practice on public-market data, create questions for your own circle, and track who called it—with separate fictional-credit economies throughout.
+
+**Free, nonredeemable credits. No deposits, withdrawals, prizes, leverage, or real-world orders.**
+
+<a href="docs/verification/redesign/markets-desktop.png"><img src="docs/verification/redesign/markets-desktop.png" alt="OpenTrader desktop market grid in dark mode, with Live and Friends navigation, search, categories, and outcome cards" width="100%" /></a>
+
+<sub>Actual application capture from the browse-first release. Provider quotes are historical screenshot data; executable quotes must pass freshness checks.</sub>
+
+## Get started
+
+**Requires Node.js 24+ and npm.** Verified locally with Node 26. No API key, paid model, cloud database, or hosted account is required.
 
 ```sh
+git clone https://github.com/desenyon/OpenTrader.git
+cd OpenTrader
 npm ci
+npm run admin:create -- --handle admin
 npm run dev
 ```
 
-Open **http://localhost:3000**. Request an account with a handle and a password of at least 12 characters. A platform administrator must approve it before trading or joining groups. First approval creates independent 10,000-credit Live and Friends wallets and a private group; repeat approvals and reactivations never reissue credits. Existing accounts remain approved users. There is no guest trading account, hidden demo balance, or generated source history. During signup, **Appear anonymous when trading** hides your name in trade history and rankings behind a stable alias for each economy. Admins can still attribute activity; memberships, comments and creator/resolver roles remain named.
+Open **[localhost:3000](http://localhost:3000)**. Your generated admin password is saved privately in `data/admin-credentials.txt`; it is never printed or committed. Sign in, then open **More options → Admin dashboard**.
 
-For a private market, invite friends from **Friends → Manage group → Invite**. Appoint an independent moderator in **Manage group → Members**, select a separate nontrading resolver in the creation form, and have the moderator approve the draft. New markets have funded LMSR liquidity even without peer orders.
+New members request an account and wait for approval. First approval creates independent **10,000-credit Live and Friends wallets** and a private group. Reactivation and repeat approval never issue another allocation.
 
-## Platform administration
+To trade with friends: invite them from **Friends → Manage group**, appoint an independent moderator and resolver, create a question with observable rules, and have the moderator approve it. The market maker provides initial liquidity even when no one has posted a limit order.
 
-Provision an administrator locally against the same database used by the server:
+<details>
+<summary><strong>Configuration and production commands</strong></summary>
 
 ```sh
-npm run admin:create -- --handle admin
+cp .env.example .env
+vim .env
+npm run build
+npm start
 ```
 
-The CLI loads `.env`, respects `DATABASE_PATH`, and accepts explicit `--database` and `--credentials` paths. It generates a strong password and saves it to `data/admin-credentials.txt` with owner-only permissions; it never prints the password or overwrites an existing receipt. Keep this ignored file private. For a production installation without development dependencies, run `node dist-server/create-admin.js --handle admin` after building. There is no public admin registration or first-user elevation.
+Production defaults to port **3000** unless overridden. The example `.env` uses development API port **3001**; change `PORT` when switching to production. Development serves the web app on **3000** and its API on **3001**. SQLite defaults to `data/opentrader.sqlite`.
 
-Sign in, then choose **More options → Admin dashboard**, or open **http://localhost:3000/#/admin**. The dashboard has five sections—Accounts, Activity, Economy, Markets and History—with compact subviews. It includes:
+The admin CLI reads `.env` and accepts `--database` and `--credentials`. It refuses to overwrite an existing credential receipt. After pruning development dependencies, use `node dist-server/create-admin.js --handle admin`.
 
-- Account requests, approval/rejection, suspension/reactivation, and last-admin protection.
-- All placed orders, individual fills, current/closed positions, gross settlement payouts, realized P&L, and exact wallet cash journals. Search and paginate across users and scopes; export the current report page.
-- Signed credit allocations/reclaims to a specific wallet or a group's free sponsor budget. Actions use repeat-safe request keys and are recorded automatically; no reason is required. Reclaims cannot spend locked cash, shares or market escrow. Initial season allocations remain visible and unchanged; admin allocations/reclaims are excluded from trading returns.
-- Trading pause/resume across both exchanges; individual order cancellation; Friends market halt/resume. Published market rules, frozen deadlines and independent settlement review still apply. Source-controlled Live markets retain provider governance.
-- Read-only reconciliation status and immutable operator history with actor, action, target and previous state. A reconciliation circuit-breaker latch requires repair and a server restart; the dashboard cannot override it.
+For HTTPS hosting, configure `PUBLIC_ORIGIN` and `COOKIE_SECURE=true`. A Docker/Compose setup is also included:
 
-Suspension immediately blocks authenticated trading and group data, cancels open orders and releases their locks. Owned positions remain recorded and settle normally; reactivation restores access without a new allocation. Pending or rejected accounts receive no wallets or group data. Platform administrators can inspect trading activity across groups; the registration screen discloses this supervision. Admin creation does not silently promote a group owner.
+```sh
+docker compose up --build
+```
 
-## Two exchanges
+Use one application instance with a persistent local volume. Take consistent SQLite backups, including active WAL state. Docker packaging is supplied; an image build is not claimed verified.
 
-**Live** reads current Polymarket/Kalshi discovery, depth, and genuine source history. Protected immediate paper orders walk available levels; no order reaches either provider. Books missing a valid source timestamp, older than five seconds, or otherwise invalid cannot execute. Point-only history is drawn as a line rather than inventing candle ranges or volume. Final payouts require explicit provider-final evidence, with a recorded correction path for later reversals.
+</details>
 
-**Friends** is invitation-only and independently priced. Binary markets use a fixed-liquidity LMSR maker plus price-time peer limits. Immediate orders, GTC/GTD limits, expiry, cancellation, cash/share locks, partial fills, and protected execution are implemented. Only owned shares can be sold. Independent creator approval, evidence-based resolution, a 24-hour challenge window, two-reviewer disputes, neutral void, moderator halt/resume, reporting and comment removal are included.
+## Two exchanges. One place.
 
-All credits are fictional, free and nonredeemable. Funds and positions never transfer across exchanges or groups. There are no deposits, withdrawals, prizes, leverage, brokerage connections, cryptocurrency wallets or real order submission.
+|                | Live Markets                                      | Friends Exchange                                     |
+| -------------- | ------------------------------------------------- | ---------------------------------------------------- |
+| **Questions**  | Public Polymarket/Kalshi markets                  | Original questions for approved group members        |
+| **Prices**     | Validated provider bid/ask and depth              | Fixed-liquidity LMSR + price-time peer orders        |
+| **Execution**  | Counterfactual paper fills; never sent externally | Owned shares, protected orders, and locked resources |
+| **Economy**    | One account-level Live wallet                     | A separate wallet for each group                     |
+| **Resolution** | Verified provider-final result                    | Independent resolver, evidence, and dispute review   |
 
-## Included tools
+Funds and positions stay inside their own exchange and group. Market prices express what trading implies; they do not guarantee an outcome.
 
-- A browse-first market grid, topic/search/source filters, watchlists, shareable market URLs, focused probability histories, and depth views.
-- Dedicated portfolio navigation, a simple prediction form, advanced limit options, and mobile navigation with a sticky prediction action.
-- Quote review with exact credit caps, average-price bounds, minimum fill, expiry, win/loss/void payout explanation and repeat-safe confirmation.
-- Portfolio, cost basis, indicative versus executable liquidation values, open orders, fills and CSV journal export.
-- Group rankings, separate forecast calibration, participation counts, and personal Live performance. Live balances are not silently published globally.
-- Discussion, in-app notifications/preferences, scoped moderation reports, private evidence, immutable decisions, and privacy-request recording.
-- Durable SQLite/WAL accounting, hashed passwords/sessions/invites, exact microcredits, journal replay/reconciliation, committed market sequences and authorized realtime refresh/snapshot recovery.
+### Built for making a call
 
-## Verify
+- **Browse first.** Search, topics, source filters, watchlists, shareable questions, and source history.
+- **Trade with a limit.** Size-aware previews, exact spend caps, average-price bounds, partial fills, GTC/GTD orders, cancellation, and expiry.
+- **Know your position.** Cost basis, realized/unrealized P&L, indicative value, estimated liquidation value after slippage, and CSV journals.
+- **Settle with evidence.** Frozen rules, creator-independent approval, a nontrading resolver, a 24-hour challenge window, impartial review, and a disclosed neutral-void policy.
+- **Choose your trading identity.** Signup can hide your name in fills and rankings behind an alias per economy. Admins retain attribution; memberships, comments, and market roles stay named.
+- **Keep score honestly.** Group returns and forecast calibration are separate. Extra credit allocations do not count as trading performance.
+
+<details>
+<summary><strong>See the mobile interface</strong></summary>
+
+<p align="center">
+  <img src="docs/verification/redesign/markets-mobile.png" width="340" alt="OpenTrader mobile market discovery with named bottom navigation" />
+</p>
+
+The app supports desktop/mobile layouts, light/dark themes, keyboard-accessible dialogs, and a sticky mobile prediction action.
+
+</details>
+
+### Your exchange, your controls
+
+The admin dashboard has five sections: **Accounts · Activity · Economy · Markets · History**.
+
+Approve or suspend accounts, inspect placed orders and fills, review holdings and gross payouts alongside realized profit, adjust a specific wallet or free group budget, pause trading, cancel open orders, and halt/resume Friends markets.
+
+Admin actions need no written reason. Actor, action, target, and prior state are recorded automatically. Reclaims cannot spend locked funds or reserved market subsidy. Suspension returns order locks while retaining positions for settlement. The last approved admin cannot be suspended.
+
+## Behind the market
+
+```mermaid
+flowchart LR
+    UI[React + TypeScript] --> API[Fastify · auth + group access]
+    API --> Friends["Friends engine<br/>LMSR + peer order book"]
+    API --> Live[Live paper simulator]
+    Sources[Permission-gated providers] --> Live
+    Friends --> Ledger[("SQLite WAL<br/>exact journal + projections")]
+    Live --> Ledger
+    Ledger --> Updates["Committed sequences<br/>realtime refresh + snapshots"]
+    Updates --> UI
+```
+
+| Layer                | Built with                                                                     |
+| -------------------- | ------------------------------------------------------------------------------ |
+| Interface            | React 19, TypeScript, Vite, Lucide, Lightweight Charts                         |
+| API & sessions       | Fastify, secure cookies, hashed passwords/sessions/invites, Zod                |
+| Trading & accounting | Deterministic LMSR, peer matching, `decimal.js`, integer microcredits          |
+| Persistence          | Node's SQLite, WAL/FULL durability, ACID transactions, immutable journals      |
+| Verification         | Vitest, property/adversarial tests, packaged-server smoke, isolated benchmarks |
+
+Transactions protect cash, owned shares, locks, order status, and idempotency together. Only committed sequences reach clients. Stale source books disable execution; reconciliation mismatches stop new trading.
+
+## Verify it yourself
 
 ```sh
 npm test
@@ -62,39 +139,33 @@ npm run test:production
 npm run benchmark
 ```
 
-The production smoke starts the bundled executable against a temporary database, checks HTML and compressed assets, verifies the hosted data gate, and exercises pending registration, the built admin CLI/login, approval, isolated wallets and admin reconciliation. Tests and benchmarks do not use the configured application database. The benchmark creates 1,000 open markets and 100 active users, then removes its own temporary database.
+The latest local verification passed **152 tests across 20 files**, TypeScript/build, and the packaged production smoke. The smoke exercises anonymous signup, reason-free admin approval, separate wallets, reports, and reconciliation against a disposable database.
 
-[Latest measured performance](docs/verification/admin-economy.md): typical 20-concurrent-order bursts had p95 approximately **165–221 ms**; a 100-user burst had p95 approximately **1,234 ms**. Every request succeeded and all reconciliation flags passed. These local Fastify-inject measurements exclude network/TLS, browser rendering and upstream latency; they do not establish production capacity. The [earlier benchmark](docs/design/performance-results.md) remains historical evidence.
+The [measured local benchmark](docs/verification/admin-economy.md#performance-sample) used **100 users and 1,000 open markets** with all submitted orders succeeding and every reconciliation flag passing. It excludes network/TLS, browser rendering, external feeds, and sustained load; it does not establish production capacity.
 
-## Production and data permissions
+### External data has a permission gate
 
-```sh
-npm run build
-npm start
-```
+Friends works independently of provider feeds. **Hosted external-data mode defaults off.** Enabling it requires both `LIVE_DATA_ENABLED=true` and `DATA_USE_ACKNOWLEDGED=true` after reviewing data-use rights. Free public APIs do not themselves authorize redistribution.
 
-Production serves http://localhost:3000 by default, with precompressed Brotli/gzip assets and immutable asset caching. SQLite data defaults to `data/opentrader.sqlite`. Use one application instance with a persistent local volume and a consistent SQLite backup; do not copy only the database file while uncheckpointed WAL writes are active.
+See the provider references in [third-party notices](THIRD_PARTY_NOTICES.md) and the [implementation verification](docs/verification/README.md). Source corrections require separately appointed, historically nontrading reviewers and a finite correction reserve.
 
-An optional container setup is included:
+## Documentation
 
-```sh
-docker compose up --build
-```
+| Start here                                                           | What it covers                                                        |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| [Privacy & admin cleanup](docs/verification/trading-privacy.md)      | Anonymous aliases, reason-free actions, and latest automated evidence |
+| [Administration & economy audit](docs/verification/admin-economy.md) | Approvals, balances, locks, settlement, and benchmark methodology     |
+| [Browse-first interface](docs/verification/redesign.md)              | Navigation, screenshots, and earlier browser coverage                 |
+| [Engine verification](docs/verification/README.md)                   | Economic rules, adversarial flows, and operating boundaries           |
+| [Contributing](CONTRIBUTING.md)                                      | Local workflow and changes to trading behavior                        |
+| [Security](SECURITY.md)                                              | Private vulnerability reporting and useful report details             |
 
-Docker packaging is supplied; an image build is not claimed tested unless recorded in the verification report. Compose binds to localhost and persists data in a named volume.
+The implemented Friends engine uses whole contracts and binary markets on a single durable host. Multi-host operation, arbitrary N-way markets, full-set conversions, margin, and real-world execution are outside the current release. Historical design concepts remain under `docs/design` and are not screenshots of current functionality.
 
-Copy `.env.example` to `.env` and edit with `vim .env`. For HTTPS hosting, set `PUBLIC_ORIGIN` to the exact origin and `COOKIE_SECURE=true`. Keep registration closed when appropriate. The development feed is a personal local preview; **hosted external-data mode defaults off**. Enabling it requires both `LIVE_DATA_ENABLED=true` and `DATA_USE_ACKNOWLEDGED=true`. These flags record an operator decision, not a license grant.
+---
 
-Public API availability does not establish redistribution permission. Review [Polymarket's terms](https://polymarket.com/tos), [Kalshi's Developer Agreement](https://assets.kalshi.com/Kalshi-Developer-Agreement.pdf), and [Kalshi's data terms](https://kalshi-public-docs.s3.amazonaws.com/kalshi-data-terms-of-service.pdf) before hosting their feeds. Friends works independently of them.
-
-Live source corrections require two operator-appointed, historically nontrading reviewers. Set existing account UUIDs in `PLATFORM_REVIEWER_IDS`; registration does not grant that duty. Corrections use a finite reserve and cannot create negative wallets. Account-deletion requests are recorded for operator review and integrity-preserving anonymization; submitting one does not claim instant deletion of shared records.
-
-## Scope and operating limits
-
-This implementation uses whole contracts and binary Friends markets. Arbitrary exhaustive N-way markets need a published rational void-payout/residual policy before activation. Full-set conversions, margin, stop orders, provider queue-position simulation and real-world execution are excluded.
-
-SQLite transactions, the durable journal, and derived projections run on one host. The 100-user burst shows event-loop queuing under heavy simultaneous load. Multi-host deployment, production availability commitments, recovery drills, staffed escalation and provider rights require separate operational verification. Do not run stateless replicas against independent database copies.
-
-See the [anonymous trading and admin cleanup verification](docs/verification/trading-privacy.md), [admin and economy audit verification](docs/verification/admin-economy.md), [redesign verification](docs/verification/redesign.md) and [original engine verification record](docs/verification/README.md) for tested flows and remaining operating limits.
-
-The original proposals and generated concepts remain under [docs/design](docs/design/) as historical work. The November 15 browse-first redesign supersedes the terminal interface and earlier concepts. See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency licenses, chart attribution and UI refinement skill credit.
+<p align="center">
+  Built by <a href="https://github.com/desenyon">@desenyon</a> ·
+  <a href="THIRD_PARTY_NOTICES.md">Third-party notices</a> ·
+  <a href="https://github.com/desenyon/OpenTrader/discussions">Discussions</a>
+</p>
