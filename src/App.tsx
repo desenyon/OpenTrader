@@ -679,8 +679,11 @@ export default function App() {
               </div>
               <div>
                 <span>3</span>
-                <h3>Settle it fairly</h3>
-                <p>Clear rules and an independent resolver.</p>
+                <h3>Decide the result</h3>
+                <p>
+                  The creator picks Yes, No, or Cancel. Credits settle
+                  instantly.
+                </p>
               </div>
             </div>
           </section>
@@ -708,7 +711,7 @@ export default function App() {
               {exchange === "FRIENDS" && user && (
                 <button className="button primary" onClick={create}>
                   <Plus size={16} />
-                  Create market
+                  Create bet
                 </button>
               )}
             </div>
@@ -817,13 +820,13 @@ export default function App() {
                   following
                     ? "Save a market to find it here."
                     : exchange === "FRIENDS" && !query
-                      ? "Create a question with clear rules, then invite your friends to predict the outcome."
+                      ? "Ask a question, choose when betting closes, and invite your friends."
                       : "Try another topic or search."
                 }
                 action={
                   exchange === "FRIENDS" && !following && !query ? (
                     <button className="button primary" onClick={create}>
-                      Create a market
+                      Create a bet
                     </button>
                   ) : (
                     <button
