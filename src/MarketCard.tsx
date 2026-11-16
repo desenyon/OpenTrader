@@ -80,7 +80,7 @@ export function MarketCard({
       <footer className="card-footer">
         <span>
           {market.volume > 0
-            ? `${market.provider === "polymarket" ? "$" : ""}${compact(market.volume)} ${market.exchange === "FRIENDS" ? "credits traded" : market.provider === "kalshi" ? "contracts" : "volume"}`
+            ? `${market.provider === "polymarket" && !market.pricing?.active ? "$" : ""}${compact(market.volume)} ${market.exchange === "FRIENDS" || market.pricing?.active ? "credits traded" : market.provider === "kalshi" ? "contracts" : "volume"}`
             : `Closes ${new Date(market.closeAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`}
         </span>
         <button
