@@ -254,19 +254,21 @@ export async function registerRoutes(
           groupId: z.string(),
           question: z.string(),
           description: z.string().optional(),
-          category: z.string(),
+          category: z.string().optional(),
           closeAt: z.string(),
           b: z.number().optional(),
-          rules: z.object({
-            condition: z.string(),
-            source: z.string(),
-            evidence: z.string(),
-            observationAt: z.string(),
-            voidPolicy: z.string(),
-            disputeHours: z.number(),
-            resolverId: z.string(),
-            reviewerIds: z.array(z.string()),
-          }),
+          rules: z
+            .object({
+              condition: z.string(),
+              source: z.string(),
+              evidence: z.string(),
+              observationAt: z.string(),
+              voidPolicy: z.string(),
+              disputeHours: z.number(),
+              resolverId: z.string(),
+              reviewerIds: z.array(z.string()),
+            })
+            .optional(),
         })
         .parse(request.body),
     ),
@@ -441,6 +443,17 @@ export async function registerRoutes(
       { userId, marketId } = await socialMarket(request);
     return store.forecast(userId, marketId, body.probability);
   });
+  app.post("/api/markets/:id/open", async (request) =>
+    store.openFriendsBet(uid(request), param(request)),
+  );
+  app.post("/api/markets/:id/resolve", async (request) =>
+    store.resolveFriendsBet(
+      uid(request),
+      param(request),
+      z.object({ outcomeId: z.string().nullable() }).parse(request.body)
+        .outcomeId,
+    ),
+  );
   app.post("/api/markets/:id/resolution", async (request) =>
     store.propose(
       uid(request),
