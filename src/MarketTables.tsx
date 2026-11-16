@@ -466,7 +466,178 @@ export function OrderBookPanel({
     </div>
   );
 }
-function MarketRules({
+type MarketRulesProps = { market?: Market; user: User | null; group?: Group };
+function MarketRules(props: MarketRulesProps) {
+  return props.market?.exchange === "FRIENDS" ? (
+    <FriendsBetRules key={props.market.id} {...props} market={props.market} />
+  ) : (
+    <DetailedMarketRules {...props} />
+  );
+}
+function FriendsBetRules({
+  market,
+  user,
+  group,
+}: MarketRulesProps & { market: Market }) {
+  const [confirm, setConfirm] = useState(false),
+    [outcome, setOutcome] = useState("yes"),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const settled = ["RESOLVED", "VOID"].includes(market.status);
+  const canResolve =
+    !!user &&
+    (user.id === market.creatorId ||
+      user.platformRole === "ADMIN" ||
+      (!!group && ["OWNER", "MODERATOR"].includes(group.role)));
+  const settle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await post(`/markets/${market.id}/resolve`, {
+        outcomeId: outcome === "cancel" ? null : outcome,
+      });
+      refreshAll();
+      setConfirm(false);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const openBet = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await post(`/markets/${market.id}/open`);
+      refreshAll();
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="rules-panel simple-bet-rules">
+      <div className="rules-main">
+        <div className="rules-title">
+          <ShieldCheck size={15} />
+          <strong>{settled ? "Result" : "About this bet"}</strong>
+          <Badge>{market.status === "VOID" ? "CANCELED" : market.status}</Badge>
+        </div>
+        {market.description && <p>{market.description}</p>}
+        {settled ? (
+          <>
+            <p className="bet-result">
+              {market.status === "VOID"
+                ? "Bet canceled · 0.50 CR paid per share"
+                : `${market.outcomes.find((o) => o.id === market.resolution?.outcomeId)?.label ?? "Result"} won · 1 CR paid per winning share`}
+            </p>
+            <p className="muted">
+              {market.resolution?.rationale} · {date(market.updatedAt)}
+            </p>
+          </>
+        ) : (
+          <>
+            <p>
+              {market.status === "DRAFT" ? "This bet is a draft. " : ""}Betting
+              closes {date(market.closeAt)}. The creator or a group admin
+              decides the result.
+            </p>
+            <p className="muted">
+              Winning shares pay 1 CR. Canceling pays 0.50 CR per share.
+            </p>
+          </>
+        )}
+      </div>
+      {canResolve && market.status === "DRAFT" && (
+        <div className="rules-actions">
+          <button
+            className="button primary small"
+            disabled={busy || Date.parse(market.closeAt) <= Date.now()}
+            onClick={() => void openBet()}
+          >
+            {busy ? "Opening…" : "Open bet"}
+          </button>
+          <ErrorNote message={error} />
+        </div>
+      )}
+
+      {canResolve &&
+        !settled &&
+        ["OPEN", "CLOSED", "HALTED", "RESOLVING"].includes(market.status) && (
+          <div className="rules-actions">
+            <button
+              className="button primary small"
+              onClick={() => {
+                setError("");
+                setConfirm(true);
+              }}
+            >
+              Resolve bet
+            </button>
+          </div>
+        )}
+      {confirm && (
+        <Modal
+          title="How did it turn out?"
+          eyebrow={market.question}
+          onClose={() => {
+            if (!busy) setConfirm(false);
+          }}
+        >
+          <div className="modal-body">
+            <div
+              className="bet-result-options"
+              role="group"
+              aria-label="Bet result"
+            >
+              {market.outcomes.map((o) => (
+                <button
+                  key={o.id}
+                  className={`button ${outcome === o.id ? "primary" : "secondary"}`}
+                  aria-pressed={outcome === o.id}
+                  onClick={() => setOutcome(o.id)}
+                  disabled={busy}
+                >
+                  {o.label}
+                </button>
+              ))}
+              <button
+                className={`button ${outcome === "cancel" ? "primary" : "secondary"}`}
+                aria-pressed={outcome === "cancel"}
+                onClick={() => setOutcome("cancel")}
+                disabled={busy}
+              >
+                Cancel bet
+              </button>
+            </div>
+            <p>
+              {outcome === "cancel"
+                ? "Everyone receives 0.50 CR per share. This splits the payout; it does not refund the original purchase price."
+                : `${market.outcomes.find((o) => o.id === outcome)?.label} shares pay 1 CR each. Other shares pay 0 CR.`}{" "}
+              Betting stops and any open orders are canceled.
+            </p>
+            <ErrorNote message={error} />
+            <button
+              className="button primary"
+              disabled={busy}
+              onClick={() => void settle()}
+            >
+              {busy
+                ? "Settling…"
+                : outcome === "cancel"
+                  ? "Cancel and pay out"
+                  : "Settle bet"}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+function DetailedMarketRules({
   market,
   user,
   group,
