@@ -22,14 +22,20 @@ export function MarketChart({
   theme: string;
 }) {
   const [interval, setInterval] = useState("1d");
-  const [series, setSeries] = useState<"amm" | "trades">("amm");
+  const [selectedSeries, setSeries] = useState<"amm" | "trades" | "reference">(
+    "amm",
+  );
+  const series =
+    selectedSeries === "reference" && market.exchange !== "LIVE"
+      ? "amm"
+      : selectedSeries;
   const container = useRef<HTMLDivElement>(null);
   const range = useRef<LogicalRange | null>(null);
   const sourceRef = useRef("");
   const source = `${market.id}/${outcome?.id}/${interval}/${series}`;
   const history = useResource<Candle[]>(
     outcome
-      ? `/markets/${encodeURIComponent(market.id)}/history?interval=${interval}&outcomeId=${encodeURIComponent(outcome.id)}${market.exchange === "FRIENDS" ? `&series=${series}` : ""}`
+      ? `/markets/${encodeURIComponent(market.id)}/history?interval=${interval}&outcomeId=${encodeURIComponent(outcome.id)}${market.exchange === "FRIENDS" || market.executionModel === "SOURCE_SEEDED_LMSR" ? `&series=${series}` : ""}`
       : null,
     15000,
   );
@@ -114,7 +120,9 @@ export function MarketChart({
     <section className="probability-chart" aria-label="Probability history">
       <div className="history-toolbar">
         <span>
-          {market.exchange === "FRIENDS" && series === "trades"
+          {(market.exchange === "FRIENDS" ||
+            market.executionModel === "SOURCE_SEEDED_LMSR") &&
+          series === "trades"
             ? "Trade prices"
             : "Probability over time"}
         </span>
@@ -150,20 +158,35 @@ export function MarketChart({
       )}
       <div className="history-caption">
         <span>
-          {market.exchange === "FRIENDS"
-            ? "Recorded group market activity"
+          {market.exchange === "FRIENDS" ||
+          market.executionModel === "SOURCE_SEEDED_LMSR"
+            ? series === "reference"
+              ? "Provider reference prices"
+              : "Recorded OpenTrader activity"
             : "Historical prices from the source market"}{" "}
           · UTC
         </span>
-        {market.exchange === "FRIENDS" && (
+        {(market.exchange === "FRIENDS" ||
+          market.executionModel === "SOURCE_SEEDED_LMSR") && (
           <div>
             <button
+              aria-pressed={series === "amm"}
               className={series === "amm" ? "active" : ""}
               onClick={() => setSeries("amm")}
             >
-              Market probability
+              OpenTrader odds
             </button>
+            {market.exchange === "LIVE" && (
+              <button
+                aria-pressed={series === "reference"}
+                className={series === "reference" ? "active" : ""}
+                onClick={() => setSeries("reference")}
+              >
+                Provider odds
+              </button>
+            )}
             <button
+              aria-pressed={series === "trades"}
               className={series === "trades" ? "active" : ""}
               onClick={() => setSeries("trades")}
             >
