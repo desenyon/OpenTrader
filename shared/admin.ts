@@ -21,6 +21,7 @@ export type AdminAction = { reason?: string } & (
   | { type: "HALT_MARKET" | "RESUME_MARKET" | "CLOSE_MARKET"; targetId: string }
 );
 export interface AdminRow {
+  executionModel?: "SOURCE_SEEDED_LMSR" | "EXTERNAL_SIM";
   exchange?: "LIVE" | "FRIENDS";
   id: string;
   primary: string;
